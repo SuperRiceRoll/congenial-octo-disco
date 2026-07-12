@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: smart-exit-station
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URI
+        sync: false  # 在 Render Dashboard 里手动填入
+      - key: MONGO_DB_NAME
+        value: smart_exit
+      - key: API_KEYS
+        value: smart-exit-demo-key-2026
+      - key: AI_PROVIDER
+        value: deepseek
+      - key: AI_API_KEY
+        sync: false  # 在 Render Dashboard 里手动填入

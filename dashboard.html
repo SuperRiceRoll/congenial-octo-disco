@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌤️ Smart Exit Station - 澳门出门看板 v4.0</title>
+    <!-- Bootstrap 5 (响应式布局) -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome 6 (风向/天气图标) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <!-- Leaflet.js (地图) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        /* ===== 天气图片横幅 ===== */
+        .weather-banner {
+            position: relative;
+            height: 200px;
+            border-radius: 30px;
+            overflow: hidden;
+            margin-bottom: 20px;
+            background-size: cover;
+            background-position: center;
+            transition: background-image 0.8s ease-in-out;
+        }
+        .weather-banner-overlay {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(20,40,80,0.88) 0%, rgba(30,60,114,0.75) 50%, rgba(20,40,80,0.7) 100%);
+            display: flex;
+            align-items: center;
+            padding: 30px;
+        }
+        .weather-banner-text {
+            background: rgba(0,0,0,0.25);
+            padding: 12px 20px;
+            border-radius: 16px;
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+        }
+        .weather-banner-text h2 {
+            color: white;
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+        .weather-banner-text p {
+            color: rgba(255,255,255,0.95);
+            font-size: 1rem;
+            margin-bottom: 0;
+            text-shadow: 0 1px 6px rgba(0,0,0,0.4);
+        }
+
+        /* 天气大数字 */
+        .weather-big { font-size: 48px; font-weight: bold; color: #1e3c72; }
+        .weather-unit { font-size: 20px; color: #888; }
+
+        /* 风向罗盘 */
+        .wind-compass {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: rgba(42,82,152,0.1);
+            margin-right: 10px;
+            transition: transform 0.5s ease;
+        }
+        .wind-compass i {
+            font-size: 28px;
+            color: #2a5298;
+        }
+
+        /* AQI */
+        .aqi-value { font-size: 36px; font-weight: bold; }
+        .aqi-good { color: #2ecc71; }
+        .aqi-moderate { color: #f39c12; }
+        .aqi-bad { color: #e74c3c; }
+
+        /* 公交列表 */
+        .bus-list { max-height: 350px; overflow-y: auto; }
+        .bus-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px; border-bottom: 1px solid #eee;
+        }
+        .bus-item:last-child { border-bottom: none; }
+        .bus-number {
+            background: #2a5298; color: white; font-weight: bold;
+            padding: 5px 12px; border-radius: 20px; font-size: 16px;
+            min-width: 55px; text-align: center;
+        }
+        .bus-direction { flex: 1; margin-left: 15px; color: #555; font-size: 14px; }
+        .bus-time {
+            background: #e8f4f8; color: #2a5298;
+            padding: 4px 10px; border-radius: 15px; font-weight: bold; font-size: 14px;
+        }
+
+        /* 建议卡片 */
+        .suggestions-area { margin-top: 20px; padding-top: 20px; border-top: 2px solid #eee; }
+        .suggestion-item {
+            display: flex; align-items: flex-start; gap: 12px;
+            padding: 14px 16px; margin-bottom: 10px; border-radius: 16px;
+            background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        .suggestion-icon { font-size: 24px; flex-shrink: 0; }
+        .suggestion-text { flex: 1; font-size: 14px; line-height: 1.5; color: #444; }
+        .suggestion-warning { border-left: 4px solid #e74c3c; background: #fff5f5; }
+        .suggestion-info { border-left: 4px solid #f39c12; background: #fffaf0; }
+        .suggestion-tip { border-left: 4px solid #2ecc71; background: #f0fff4; }
+
+        /* 站点选择器 */
+        .stop-selector {
+            background: #fff; border-radius: 50px; padding: 5px;
+            display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+        }
+        .stop-btn {
+            background: #e9ecef; border: none; padding: 10px 18px;
+            border-radius: 40px; cursor: pointer; font-size: 14px; transition: all 0.2s;
+        }
+        .stop-btn.active { background: #2a5298; color: white; }
+        .stop-btn:hover { background: #2a5298; color: white; }
+
+        /* 用户按钮 */
+        .user-btn {
+            background: rgba(255,255,255,0.15); color: white; border: none;
+            padding: 6px 16px; border-radius: 20px; cursor: pointer; font-size: 13px;
+            margin-left: auto; transition: all 0.2s;
+        }
+        .user-btn:hover { background: rgba(255,255,255,0.3); }
+        .user-btn.logged-in { background: #27ae60; }
+
+        /* 弹窗遮罩 */
+        .modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6); z-index: 1000;
+            justify-content: center; align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-box {
+            background: white; border-radius: 24px; padding: 30px;
+            width: 380px; max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .modal-box h2 { color: #1e3c72; margin-bottom: 20px; font-size: 22px; }
+        .modal-close {
+            position: absolute; top: 15px; right: 20px; background: none;
+            border: none; font-size: 24px; cursor: pointer; color: #999;
+        }
+        .modal-close:hover { color: #333; }
+        .auth-input {
+            width: 100%; padding: 12px 16px; margin-bottom: 12px;
+            border: 2px solid #e0e0e0; border-radius: 12px; font-size: 15px;
+            transition: border-color 0.2s; box-sizing: border-box;
+        }
+        .auth-input:focus { border-color: #2a5298; outline: none; }
+        .auth-btn {
+            width: 100%; padding: 12px;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white; border: none; border-radius: 12px; font-size: 16px;
+            cursor: pointer; transition: transform 0.2s;
+        }
+        .auth-btn:hover { transform: translateY(-1px); }
+        .auth-switch { text-align: center; margin-top: 15px; font-size: 13px; color: #888; }
+        .auth-switch a { color: #2a5298; cursor: pointer; text-decoration: underline; }
+        .auth-msg { text-align: center; margin-top: 10px; font-size: 13px; min-height: 20px; }
+        .auth-msg.success { color: #27ae60; }
+        .auth-msg.error { color: #e74c3c; }
+
+        /* 用户信息栏 */
+        .user-info-bar {
+            background: rgba(255,255,255,0.9); color: #1e3c72;
+            padding: 8px 16px; border-radius: 12px; font-size: 13px;
+            margin-bottom: 15px; display: none; align-items: center; gap: 8px;
+        }
+        .user-info-bar.visible { display: flex; }
+        .user-info-bar .logout-btn {
+            margin-left: auto; background: rgba(30,60,114,0.15); border: none;
+            color: #1e3c72; padding: 3px 12px; border-radius: 12px; cursor: pointer; font-size: 12px;
+        }
+        .user-info-bar .logout-btn:hover { background: rgba(30,60,114,0.25); }
+
+        /* 主卡片 */
+        .dashboard-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 30px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+        }
+        .info-card {
+            background: #f8f9fa;
+            border-radius: 20px;
+            padding: 18px;
+            margin-bottom: 20px;
+            transition: transform 0.2s;
+            position: relative;
+            height: 100%;
+        }
+        .info-card:hover { transform: translateY(-3px); }
+        .info-card h3 {
+            color: #2a5298; font-size: 18px; margin-bottom: 12px;
+            display: flex; align-items: center; gap: 8px;
+            border-left: 4px solid #2a5298; padding-left: 12px;
+        }
+
+        .hide-btn {
+            position: absolute; top: 10px; right: 12px;
+            background: none; border: none; color: #ccc; font-size: 18px;
+            cursor: pointer; padding: 4px 8px; border-radius: 50%; transition: all 0.2s; line-height: 1;
+        }
+        .hide-btn:hover { color: #e74c3c; background: rgba(231, 76, 60, 0.1); }
+
+        .card-hidden { display: none !important; }
+        .show-hidden-area { text-align: center; margin-top: 10px; }
+        .show-hidden-btn {
+            background: rgba(255,255,255,0.15); color: rgba(255,255,255,0.8);
+            border: 1px dashed rgba(255,255,255,0.3); padding: 8px 20px;
+            border-radius: 25px; cursor: pointer; font-size: 13px; transition: all 0.2s;
+        }
+        .show-hidden-btn:hover { background: rgba(255,255,255,0.25); color: white; }
+
+        /* 偏好标签按钮 */
+        .tag-btn {
+            background: #f0f2f5; border: 2px solid #e0e0e0;
+            padding: 8px 16px; border-radius: 25px; cursor: pointer;
+            font-size: 13px; transition: all 0.2s; color: #555;
+        }
+        .tag-btn:hover {
+            border-color: #2a5298; background: #e8edf5;
+        }
+        .tag-btn.active {
+            background: #2a5298; color: white; border-color: #2a5298;
+        }
+
+        .loading { text-align: center; padding: 40px; color: #888; }
+        .error { color: #e74c3c; text-align: center; padding: 20px; }
+
+        /* 地图容器 */
+        #leaflet-map {
+            height: 300px;
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        /* 手机适配微调 */
+        @media (max-width: 576px) {
+            .weather-banner { height: 150px; }
+            .weather-banner-text h2 { font-size: 1.4rem; }
+            .weather-big { font-size: 36px; }
+            .dashboard-card { padding: 16px; }
+            h1 { font-size: 22px; }
+            .stop-btn { font-size: 12px; padding: 6px 12px; }
+            #leaflet-map { height: 220px; }
+        }
+
+        footer {
+            text-align: center; color: rgba(255,255,255,0.7);
+            font-size: 12px; margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 天气图片横幅 -->
+        <div class="weather-banner" id="weatherBanner">
+            <div class="weather-banner-overlay">
+                <div class="weather-banner-text">
+                    <h2 id="bannerTitle">☀️ 澳门 · 出门看板</h2>
+                    <p id="bannerSub">实时天气 · 空气质量 · 巴士到站 · 智能建议</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="dashboard-card">
+            <!-- 标题栏 -->
+            <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+                <h1 class="mb-0" style="flex:1;">🏠 Smart Exit Station</h1>
+                <button class="user-btn" id="userBtn">👤 登录</button>
+            </div>
+            <div class="subtitle" style="color:#666;font-size:14px;padding-bottom:15px;border-bottom:2px solid #eee;">
+                澳门出门看板 · 出门前看一眼（安全认证已启用）
+            </div>
+
+            <!-- 用户信息栏 -->
+            <div class="user-info-bar" id="userInfoBar">
+                👋 <span id="userDisplayName">用户</span>
+                <button class="logout-btn" id="logoutBtn">退出</button>
+            </div>
+
+            <!-- ===== 个性化偏好标签（登录后显示） ===== -->
+            <div id="preferenceSection" style="display:none; margin-bottom: 15px;">
+                <div class="info-card" style="margin-bottom:0; padding:14px 18px;">
+                    <h3 style="font-size:15px; margin-bottom:10px;">🎯 我的出行偏好</h3>
+                    <p style="font-size:12px; color:#888; margin-bottom:10px;">点击选择你的习惯，AI建议会更贴心~</p>
+                    <div id="preferenceTags" class="d-flex flex-wrap gap-2"></div>
+                </div>
+            </div>
+
+            <!-- 站点选择 -->
+            <div class="stop-selector" id="stopSelector">
+                <button class="stop-btn" data-stop="M02">🚌 亚马喇前地</button>
+                <button class="stop-btn" data-stop="M62">🚌 关闸总站</button>
+                <button class="stop-btn" data-stop="M135">🚌 葡京酒店</button>
+                <button class="stop-btn" data-stop="M172">🚌 妈阁总站</button>
+                <button class="stop-btn" data-stop="M247">🚌 新马路</button>
+                <button class="stop-btn" data-stop="M145">🚌 氹仔码头</button>
+            </div>
+
+            <div id="content">
+                <div class="loading">⏳ 加载中...</div>
+            </div>
+        </div>
+
+        <!-- 显示隐藏卡片的按钮 -->
+        <div class="show-hidden-area" id="showHiddenArea" style="display:none;">
+            <button class="show-hidden-btn" id="showHiddenBtn">👁️ 显示已隐藏的板块</button>
+        </div>
+    </div>
+
+    <!-- ===== 登录弹窗 ===== -->
+    <div class="modal-overlay" id="loginModal"><div class="modal-box" style="position:relative;">
+        <button class="modal-close" onclick="closeAllModals()">✕</button>
+        <h2>🔐 登录</h2>
+        <input class="auth-input" id="loginUsername" placeholder="用户名或邮箱" type="text">
+        <input class="auth-input" id="loginPassword" placeholder="密码" type="password">
+        <button class="auth-btn" onclick="handleLogin()">登录</button>
+        <div class="auth-msg" id="loginMsg"></div>
+        <div class="auth-switch">还没有账号？<a onclick="switchToRegister()">去注册</a></div>
+    </div></div>
+
+    <!-- ===== 注册弹窗 ===== -->
+    <div class="modal-overlay" id="registerModal"><div class="modal-box" style="position:relative;">
+        <button class="modal-close" onclick="closeAllModals()">✕</button>
+        <h2>📝 注册</h2>
+        <input class="auth-input" id="regUsername" placeholder="用户名（至少3个字符）" type="text">
+        <input class="auth-input" id="regEmail" placeholder="邮箱" type="email">
+        <input class="auth-input" id="regPassword" placeholder="密码（至少6位）" type="password">
+        <button class="auth-btn" onclick="handleRegister()">注册</button>
+        <div class="auth-msg" id="registerMsg"></div>
+        <div class="auth-switch">已有账号？<a onclick="switchToLogin()">去登录</a></div>
+    </div></div>
+
+    <footer>
+        📡 数据来源：澳门气象局(SMG) / 澳门空气质量 / DSAT巴士报站
+        <br>🔐 API Gateway 二次认证 | 🏗️ 微服务架构 | 💡 AI 智能建议引擎
+    </footer>
+
+<script>
+    // ========== API Key / 地址配置 ==========
+    const API_KEY = "smart-exit-demo-key-2026";
+    // 部署到云端后前端和后端同域，用相对路径；本地开发用 localhost
+    const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+        ? 'http://localhost:8000'
+        : '';
+
+    let currentStop = "M02";
+    let mapInstance = null;
+    let mapMarkers = [];
+
+    // ========== 天气图片映射 ==========
+    const WEATHER_IMAGES = {
+        sunny:     "/static/images/sunny.jpg",
+        cloudy:    "/static/images/cloudy.jpg",
+        rainy:     "/static/images/rainy.jpg",
+        hazy:      "/static/images/hazy.jpg"
+    };
+
+    function getWeatherImage(wmoCode, aqi) {
+        // WMO code: 0=clear, 1-3=cloudy, 45-48=fog, 51-82=rain
+        if (wmoCode === 0) return WEATHER_IMAGES.sunny;
+        if (wmoCode >= 1 && wmoCode <= 3) return WEATHER_IMAGES.cloudy;
+        if (wmoCode >= 45 && wmoCode <= 48) return WEATHER_IMAGES.hazy;
+        if (wmoCode >= 51 && wmoCode <= 99) return WEATHER_IMAGES.rainy;
+        // 余下看 AQI
+        if (aqi !== "--" && !isNaN(aqi) && aqi > 100) return WEATHER_IMAGES.hazy;
+        return WEATHER_IMAGES.cloudy;
+    }
+
+    function getWeatherTitle(wmoCode, temp, weatherDesc) {
+        if (wmoCode === 0) return "☀️ 晴朗 · " + temp + "°C";
+        if (wmoCode >= 1 && wmoCode <= 3) return "⛅ " + weatherDesc + " · " + temp + "°C";
+        if (wmoCode >= 45 && wmoCode <= 48) return "🌫️ " + weatherDesc + " · " + temp + "°C";
+        if (wmoCode >= 51 && wmoCode <= 99) return "🌧️ " + weatherDesc + " · " + temp + "°C";
+        return "🌤️ " + temp + "°C";
+    }
+
+    // ========== 澳门巴士站坐标 ==========
+    const BUS_STOP_COORDS = {
+        "M02":  { lat: 22.1947, lng: 113.5470, name: "亚马喇前地" },
+        "M62":  { lat: 22.2137, lng: 113.5496, name: "关闸总站" },
+        "M135": { lat: 22.1898, lng: 113.5438, name: "葡京酒店" },
+        "M172": { lat: 22.1876, lng: 113.5303, name: "妈阁总站" },
+        "M247": { lat: 22.1937, lng: 113.5394, name: "新马路" },
+        "M145": { lat: 22.1561, lng: 113.5586, name: "氹仔码头" }
+    };
+
+    const MACAU_CENTER = { lat: 22.1987, lng: 113.5439 };
+
+    // ========== 风向角度 → 中文 ==========
+    function windDirectionText(degrees) {
+        const directions = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"];
+        const index = Math.round((degrees % 360) / 45) % 8;
+        return directions[index];
+    }
+
+    // ========== 用户偏好管理 ==========
+    function loadHiddenCards() {
+        try { return JSON.parse(localStorage.getItem("smartexit_hidden_cards")) || []; }
+        catch(e) { return []; }
+    }
+    function saveHiddenCards(cards) {
+        localStorage.setItem("smartexit_hidden_cards", JSON.stringify(cards));
+    }
+    function hideCard(cardId) {
+        const hidden = loadHiddenCards();
+        if (hidden.indexOf(cardId) === -1) hidden.push(cardId);
+        saveHiddenCards(hidden);
+        const el = document.getElementById(cardId);
+        if (el) el.classList.add("card-hidden");
+        document.getElementById("showHiddenArea").style.display = "block";
+    }
+    function showAllHidden() {
+        const hidden = loadHiddenCards();
+        hidden.forEach(function(id) {
+            const el = document.getElementById(id);
+            if (el) el.classList.remove("card-hidden");
+        });
+        saveHiddenCards([]);
+        document.getElementById("showHiddenArea").style.display = "none";
+    }
+
+    // ========== 地图初始化 ==========
+    function initMap(stopId) {
+        if (mapInstance) {
+            mapInstance.remove();
+            mapInstance = null;
+            mapMarkers = [];
+        }
+
+        mapInstance = L.map('leaflet-map').setView([MACAU_CENTER.lat, MACAU_CENTER.lng], 13);
+
+        // 优先用 CartoDB（国内可访问），备选 OSM
+        var tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+            maxZoom: 19,
+            subdomains: 'abcd'
+        }).addTo(mapInstance);
+
+        // 图块加载失败时换 OSM 的 http 源
+        tileLayer.on('tileerror', function() {
+            // 只尝试一次切换
+            if (mapInstance && !mapInstance._osmFallback) {
+                mapInstance._osmFallback = true;
+                L.tileLayer('http://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap',
+                    maxZoom: 18
+                }).addTo(mapInstance);
+            }
+        });
+
+        // 给所有站点加灰色标记
+        var stopIds = Object.keys(BUS_STOP_COORDS);
+        for (var i = 0; i < stopIds.length; i++) {
+            var sid = stopIds[i];
+            var coord = BUS_STOP_COORDS[sid];
+            var isActive = (sid === stopId);
+            var markerColor = isActive ? 'red' : 'blue';
+            var marker = L.circleMarker([coord.lat, coord.lng], {
+                radius: isActive ? 12 : 8,
+                color: markerColor,
+                fillColor: markerColor,
+                fillOpacity: 0.7
+            }).addTo(mapInstance);
+            marker.bindPopup("<b>" + coord.name + "</b> (" + sid + ")" + (isActive ? " ← 当前站点" : ""));
+            if (isActive) {
+                marker.openPopup();
+            }
+            mapMarkers.push(marker);
+        }
+
+        // 强制刷新大小（动态内容中的 Leaflet 必须）
+        setTimeout(function() {
+            if (mapInstance) {
+                mapInstance.invalidateSize();
+            }
+        }, 100);
+        // 再加一次延迟确保图块加载
+        setTimeout(function() {
+            if (mapInstance) {
+                mapInstance.invalidateSize();
+            }
+        }, 500);
+    }
+
+    // ========== 数据获取 ==========
+    async function refreshData() {
+        const contentDiv = document.getElementById('content');
+        contentDiv.innerHTML = '<div class="loading">🔄 加载中...</div>';
+
+        try {
+            const response = await fetch(
+                API_BASE + '/dashboard?stop_id=' + currentStop,
+                { headers: { 'X-API-Key': API_KEY } }
+            );
+            if (!response.ok) {
+                const errData = await response.json().catch(function(){ return {}; });
+                throw new Error(errData.detail || 'HTTP error: ' + response.status);
+            }
+            const data = await response.json();
+            renderDashboard(data);
+        } catch (error) {
+            contentDiv.innerHTML = '<div class="error">❌ 连接失败<br>错误: ' + error.message + '</div>';
+        }
+    }
+
+    // ========== 渲染 Dashboard ==========
+    function renderDashboard(data) {
+        // 深获取天气数据（优先从 /dashboard 的简化字段，需要的字段从 /macau-weather 的完整字段在建议里有）
+        // 实际 dashboard 接口返回的数据我们通过另一个请求补全天气详情
+        // 先渲染，然后通过单独的天气请求获取完整数据更新横幅和风向
+        const weather = data.天气 || {};
+        const air = data.空气质量 || {};
+        const bus = data.公交 || {};
+        const suggestions = data.建议 || {};
+
+        var weatherTemp = weather.温度 || '--';
+        var weatherWind = weather.风速 || '--';
+        var airIndex = air.指数 || '--';
+
+        // AQI 等级
+        let aqiClass = "aqi-good";
+        let aqiText = "良好";
+        if (airIndex !== "暂无" && airIndex !== "N/A" && !isNaN(airIndex)) {
+            if (airIndex <= 50)        { aqiClass = "aqi-good";     aqiText = "优"; }
+            else if (airIndex <= 100)  { aqiClass = "aqi-moderate"; aqiText = "良"; }
+            else                       { aqiClass = "aqi-bad";      aqiText = "差"; }
+        }
+
+        var busList = bus.巴士信息 || [];
+        var stopName = bus.站点名称 || bus.站点编号 || currentStop;
+
+        // 公交列表 HTML
+        let busHtml = '<div class="bus-list">';
+        if (busList.length === 0) {
+            busHtml += '<div style="text-align:center; padding:20px;">暂无巴士信息</div>';
+        } else {
+            for (let i = 0; i < busList.length; i++) {
+                const b = busList[i];
+                busHtml += '<div class="bus-item">';
+                busHtml += '<span class="bus-number">' + (b.线路 || '?') + '</span>';
+                busHtml += '<span class="bus-direction">' + (b.方向 || '') + '</span>';
+                busHtml += '<span class="bus-time">' + (b['预计到站(分钟)'] || '?') + '分钟</span>';
+                busHtml += '</div>';
+            }
+        }
+        busHtml += '</div>';
+
+        // 建议列表
+        const suggestionList = suggestions.建议列表 || [];
+        let suggestionHtml = '';
+        if (suggestionList.length > 0) {
+            for (let i = 0; i < suggestionList.length; i++) {
+                const s = suggestionList[i];
+                suggestionHtml +=
+                    '<div class="suggestion-item suggestion-' + (s.level || 'info') + '">' +
+                        '<div class="suggestion-icon">' + (s.icon || '[i]') + '</div>' +
+                        '<div class="suggestion-text">' + (s.message || '') + '</div>' +
+                    '</div>';
+            }
+        } else {
+            suggestionHtml = '<div style="color:#999; text-align:center; padding:10px;">暂无建议数据</div>';
+        }
+
+        const suggestionSource = suggestions.来源 || 'AI智能引擎';
+        const hiddenCards = loadHiddenCards();
+
+        // ===== 构建完整 HTML（使用 Bootstrap 5 网格） =====
+        const html =
+            // 第1行：天气 + 空气质量
+            '<div class="row g-3 mb-3">' +
+                // 天气卡片
+                '<div class="col-12 col-md-6" id="card-weather">' +
+                    '<div class="info-card">' +
+                        '<button class="hide-btn" onclick="hideCard(\'card-weather\')" title="隐藏此板块">✕</button>' +
+                        '<h3>🌤️ 天气状况</h3>' +
+                        '<div class="d-flex align-items-center gap-3">' +
+                            '<div class="weather-big">' + weatherTemp + '<span class="weather-unit">°C</span></div>' +
+                            '<div id="windDirectionDisplay" style="font-size:14px;color:#666;">' +
+                                '<div class="wind-compass" id="windCompass">' +
+                                    '<i class="fa-solid fa-location-arrow"></i>' +
+                                '</div>' +
+                                '<div>💨 <span id="windSpeedDisplay">' + weatherWind + '</span> km/h</div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+
+                // 空气质量卡片
+                '<div class="col-12 col-md-6" id="card-air">' +
+                    '<div class="info-card">' +
+                        '<button class="hide-btn" onclick="hideCard(\'card-air\')" title="隐藏此板块">✕</button>' +
+                        '<h3>😷 空气质量</h3>' +
+                        '<div class="aqi-value ' + aqiClass + '">AQI: ' + airIndex + '</div>' +
+                        '<div style="margin-top: 8px;">📊 等级: ' + aqiText + '</div>' +
+                        '<div style="font-size: 14px; color: #666; margin-top: 8px;">' +
+                            'PM2.5: ' + (air["PM2.5"] || air.PM2_5 || '--') + ' ug/m³<br>' +
+                            'PM10: ' + (air.PM10 || '--') + ' ug/m³' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+
+            // 第2行：公交 + 地图
+            '<div class="row g-3 mb-3">' +
+                // 公交卡片
+                '<div class="col-12 col-lg-6" id="card-bus">' +
+                    '<div class="info-card">' +
+                        '<button class="hide-btn" onclick="hideCard(\'card-bus\')" title="隐藏此板块">✕</button>' +
+                        '<h3>🚌 巴士到站 · ' + stopName + '</h3>' +
+                        busHtml +
+                        (bus.提示 ? '<div style="font-size:12px;color:#999;margin-top:10px;">💡 ' + bus.提示 + '</div>' : '') +
+                    '</div>' +
+                '</div>' +
+
+                // 地图卡片
+                '<div class="col-12 col-lg-6" id="card-map">' +
+                    '<div class="info-card">' +
+                        '<button class="hide-btn" onclick="hideCard(\'card-map\')" title="隐藏此板块">✕</button>' +
+                        '<h3>🗺️ 澳门巴士站地图</h3>' +
+                        '<div id="leaflet-map"></div>' +
+                        '<div style="font-size:11px;color:#999;margin-top:8px;text-align:center;">' +
+                            '🔴 当前站点 &nbsp;·&nbsp; 🔵 其他站点 &nbsp;·&nbsp; 🖱️ 点击标记可查看站名' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+
+            // 第3行：建议卡片（带ID用于局部刷新）
+            '<div class="row g-3">' +
+                '<div class="col-12" id="card-suggestions">' +
+                    '<div class="info-card">' +
+                        '<button class="hide-btn" onclick="hideCard(\'card-suggestions\')" title="隐藏此板块">✕</button>' +
+                        '<h3>💡 出门建议</h3>' +
+                        '<div id="suggestionsBody">' + suggestionHtml + '</div>' +
+                        '<div id="suggestionSource" style="font-size: 11px; color: #aaa; text-align: right; margin-top: 8px;">' +
+                            '🤖 数据来源: ' + suggestionSource +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>' +
+
+            // 底部时间戳
+            '<div style="font-size: 12px; color: #aaa; text-align: center; margin-top: 15px;">' +
+                '🕐 数据更新时间: ' + (data.更新时间 || '刚刚') +
+            '</div>';
+
+        document.getElementById('content').innerHTML = html;
+
+        // 恢复已隐藏的卡片
+        var hCards = loadHiddenCards();
+        for (var i = 0; i < hCards.length; i++) {
+            var el = document.getElementById(hCards[i]);
+            if (el) el.classList.add("card-hidden");
+        }
+        document.getElementById("showHiddenArea").style.display =
+            (hCards.length > 0) ? "block" : "none";
+
+        // ===== 异步获取完整天气数据（含天气代码、风向） =====
+        fetchWeatherDetails(weatherTemp, airIndex);
+    }
+
+    // ========== 局部刷新：换站点时只换公交 + 地图 ==========
+    async function refreshBusAndMap() {
+        try {
+            // 调用全量接口但只更新公交卡 + 地图 + 建议
+            const resp = await fetch(
+                API_BASE + '/dashboard?stop_id=' + currentStop + '&user_tags=' + getTagsParam(),
+                { headers: { 'X-API-Key': API_KEY } }
+            );
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            const bus = data.公交 || {};
+            const suggestions = data.建议 || {};
+
+            // --- 1. 刷新公交卡片 ---
+            var busList = bus.巴士信息 || [];
+            var stopName = bus.站点名称 || bus.站点编号 || currentStop;
+            var busHtml = '<div class="bus-list">';
+            if (busList.length === 0) {
+                busHtml += '<div style="text-align:center;padding:20px;">暂无巴士信息</div>';
+            } else {
+                for (var i = 0; i < busList.length; i++) {
+                    var b = busList[i];
+                    busHtml += '<div class="bus-item">';
+                    busHtml += '<span class="bus-number">' + (b.线路 || '?') + '</span>';
+                    busHtml += '<span class="bus-direction">' + (b.方向 || '') + '</span>';
+                    busHtml += '<span class="bus-time">' + (b['预计到站(分钟)'] || '?') + '分钟</span>';
+                    busHtml += '</div>';
+                }
+            }
+            busHtml += '</div>';
+
+            var busCardEl = document.getElementById('card-bus');
+            if (busCardEl) {
+                busCardEl.innerHTML =
+                    '<div class="info-card">' +
+                        '<button class="hide-btn" onclick="hideCard(\'card-bus\')" title="隐藏此板块">✕</button>' +
+                        '<h3>🚌 巴士到站 · ' + stopName + '</h3>' +
+                        busHtml +
+                        (bus.提示 ? '<div style="font-size:12px;color:#999;margin-top:10px;">💡 ' + bus.提示 + '</div>' : '') +
+                    '</div>';
+            }
+
+            // --- 2. 刷新建议 ---
+            var suggestionList = suggestions.建议列表 || [];
+            var suggestionSource = suggestions.来源 || 'AI智能引擎';
+            var sh = '';
+            for (var i = 0; i < suggestionList.length; i++) {
+                var s = suggestionList[i];
+                sh += '<div class="suggestion-item suggestion-' + (s.level || 'info') + '">' +
+                    '<div class="suggestion-icon">' + (s.icon || '[i]') + '</div>' +
+                    '<div class="suggestion-text">' + (s.message || '') + '</div></div>';
+            }
+            var sb = document.getElementById('suggestionsBody');
+            if (sb) sb.innerHTML = sh || '<div style="color:#999;text-align:center;padding:10px;">暂无建议数据</div>';
+            var ss = document.getElementById('suggestionSource');
+            if (ss) ss.textContent = '🤖 数据来源: ' + suggestionSource;
+
+            // --- 3. 刷新地图 ---
+            initMap(currentStop);
+
+        } catch(e) {
+            console.log('局部刷新失败:', e.message);
+        }
+    }
+
+    function getTagsParam() {
+        var user = getSavedUser();
+        if (!user) return '';
+        var tags = (user.preferences && user.preferences.personal_tags) || [];
+        return tags.join(',');
+    }
+
+    // ========== 获取完整天气细节（更新横幅 & 风向罗盘） ==========
+    async function fetchWeatherDetails(fallbackTemp, fallbackAqi) {
+        try {
+            const resp = await fetch(API_BASE + '/macau-weather', {
+                headers: { 'X-API-Key': API_KEY }
+            });
+            if (!resp.ok) throw new Error('fetch failed');
+            const w = await resp.json();
+
+            var wmoCode = w.天气代码 || 0;
+            var windDir = w.风向 || 0;
+            var windSpeed = w.风速 || fallbackTemp;
+            var weatherDesc = w.天气描述 || '未知';
+            var temp = w.当前温度 || fallbackTemp;
+
+            // 更新横幅
+            var imgUrl = getWeatherImage(wmoCode, fallbackAqi);
+            document.getElementById('weatherBanner').style.backgroundImage = "url('" + imgUrl + "')";
+            document.getElementById('bannerTitle').textContent = getWeatherTitle(wmoCode, temp, weatherDesc);
+            document.getElementById('bannerSub').textContent =
+                "💨 " + windDirectionText(windDir) + "风 " + windSpeed + " km/h · " + weatherDesc;
+
+            // 更新风向罗盘
+            var compass = document.getElementById('windCompass');
+            if (compass) {
+                compass.style.transform = 'rotate(' + windDir + 'deg)';
+            }
+            var windSpeedEl = document.getElementById('windSpeedDisplay');
+            if (windSpeedEl) {
+                windSpeedEl.textContent = windSpeed;
+            }
+
+            // 初始化地图
+            initMap(currentStop);
+
+        } catch(e) {
+            // 降级：横幅用默认晴天
+            document.getElementById('weatherBanner').style.backgroundImage =
+                "url('" + WEATHER_IMAGES.sunny + "')";
+            document.getElementById('bannerTitle').textContent = "☀️ " + fallbackTemp + "°C";
+            initMap(currentStop);
+        }
+    }
+
+    // ========== 初始化 ==========
+    window.onload = function() {
+        // 站点按钮
+        var buttons = document.querySelectorAll('.stop-btn');
+        for (var i = 0; i < buttons.length; i++) {
+            buttons[i].addEventListener('click', function() {
+                currentStop = this.getAttribute('data-stop');
+                for (var j = 0; j < buttons.length; j++) {
+                    buttons[j].classList.remove('active');
+                }
+                this.classList.add('active');
+                refreshBusAndMap();
+            });
+        }
+
+        var showBtn = document.getElementById('showHiddenBtn');
+        if (showBtn) showBtn.addEventListener('click', showAllHidden);
+
+        if (buttons.length > 0) buttons[0].classList.add('active');
+
+        // 默认横幅背景
+        document.getElementById('weatherBanner').style.backgroundImage =
+            "url('" + WEATHER_IMAGES.sunny + "')";
+
+        refreshData();
+        initAuthUI();
+    };
+
+    // ========== 用户认证 ==========
+    function initAuthUI() {
+        var savedUser = localStorage.getItem("smartexit_user");
+        if (savedUser) {
+            try {
+                setLoggedIn(JSON.parse(savedUser));
+            } catch(e) {
+                localStorage.removeItem("smartexit_user");
+            }
+        }
+
+        document.getElementById("userBtn").addEventListener("click", function() {
+            var user = getSavedUser();
+            if (user) {
+                alert("👋 当前用户: " + user.username + "\n邮箱: " + user.email);
+            } else {
+                openModal("loginModal");
+            }
+        });
+
+        document.getElementById("logoutBtn").addEventListener("click", function() {
+            localStorage.removeItem("smartexit_user");
+            localStorage.removeItem("smartexit_token");
+            setLoggedOut();
+        });
+
+        document.getElementById("loginPassword").addEventListener("keydown", function(e) {
+            if (e.key === "Enter") handleLogin();
+        });
+        document.getElementById("regPassword").addEventListener("keydown", function(e) {
+            if (e.key === "Enter") handleRegister();
+        });
+    }
+
+    function getSavedUser() {
+        try { return JSON.parse(localStorage.getItem("smartexit_user")); }
+        catch(e) { return null; }
+    }
+    function getSavedToken() {
+        return localStorage.getItem("smartexit_token");
+    }
+    function setLoggedIn(user) {
+        document.getElementById("userBtn").textContent = "👤 " + user.username;
+        document.getElementById("userBtn").classList.add("logged-in");
+        document.getElementById("userDisplayName").textContent = user.username;
+        document.getElementById("userInfoBar").classList.add("visible");
+        document.getElementById("preferenceSection").style.display = "block";
+        renderPreferenceTags(user);
+    }
+    function setLoggedOut() {
+        document.getElementById("userBtn").textContent = "👤 登录";
+        document.getElementById("userBtn").classList.remove("logged-in");
+        document.getElementById("userInfoBar").classList.remove("visible");
+        document.getElementById("preferenceSection").style.display = "none";
+    }
+    function openModal(id) {
+        document.getElementById(id).classList.add("active");
+    }
+    function closeAllModals() {
+        document.querySelectorAll(".modal-overlay").forEach(function(m) {
+            m.classList.remove("active");
+        });
+        document.getElementById("loginMsg").textContent = "";
+        document.getElementById("registerMsg").textContent = "";
+    }
+    document.addEventListener("click", function(e) {
+        if (e.target.classList.contains("modal-overlay")) closeAllModals();
+    });
+    function switchToRegister() { closeAllModals(); openModal("registerModal"); }
+    function switchToLogin()    { closeAllModals(); openModal("loginModal"); }
+
+    // ========== 全局：用户个性化偏好标签 ==========
+    const PREFERENCE_TAGS = [
+        { id: "sun_protection", label: "🧴 我在意防晒", emoji: "🧴" },
+        { id: "like_walking",   label: "🚶 我喜欢走路", emoji: "🚶" },
+        { id: "like_transit",  label: "🚌 我喜欢公共交通", emoji: "🚌" },
+        { id: "like_driving",  label: "🚗 我喜欢开车", emoji: "🚗" },
+        { id: "health_asthma", label: "🫁 我有哮喘/呼吸道敏感", emoji: "🫁" },
+        { id: "health_joint",  label: "🦴 我有关节问题", emoji: "🦴" },
+        { id: "pet_dog",       label: "🐕 我要遛狗", emoji: "🐕" },
+        { id: "with_kid",      label: "👶 带小孩出门", emoji: "👶" }
+    ];
+
+    // 把标签ID映射成AI能理解的提示词
+    function getTagPrompt(tagIds) {
+        var promptMap = {
+            "sun_protection": "用户特别在意防晒，请提醒防晒措施（涂防晒霜、戴帽子、带伞）。",
+            "like_walking": "用户喜欢步行，请给出步行相关的建议（路程距离、炎热程度、是否适合步行）。",
+            "like_transit": "用户偏好公共交通，请着重推荐巴士出行方案。",
+            "like_driving": "用户偏好开车，请提醒交通拥堵情况和停车建议。",
+            "health_asthma": "用户有哮喘或呼吸道敏感，请特别关注空气质量对呼吸的影响。",
+            "health_joint": "用户有关节问题，请提醒天气湿度变化对关节的影响。",
+            "pet_dog": "用户要遛狗，请给出适合遛狗的时段和天气提醒。",
+            "with_kid": "用户带小孩出门，请给出带娃出门的特别提醒（防晒、饮水、穿衣）。"
+        };
+        var prompts = [];
+        for (var i = 0; i < tagIds.length; i++) {
+            if (promptMap[tagIds[i]]) {
+                prompts.push(promptMap[tagIds[i]]);
+            }
+        }
+        return prompts.join(" ");
+    }
+
+    // ========== 偏好标签渲染 ==========
+    function getTagsFromUser(user) {
+        return (user && user.preferences && user.preferences.personal_tags) || [];
+    }
+
+    function renderPreferenceTags(user) {
+        var container = document.getElementById("preferenceTags");
+        if (!container) return;
+        var activeTags = getTagsFromUser(user);
+        var html = '';
+        for (var i = 0; i < PREFERENCE_TAGS.length; i++) {
+            var tag = PREFERENCE_TAGS[i];
+            var active = activeTags.indexOf(tag.id) !== -1;
+            html += '<button class="tag-btn ' + (active ? 'active' : '') + '" data-tag-id="' + tag.id + '">' + tag.label + '</button>';
+        }
+        container.innerHTML = html;
+
+        // 绑定点击事件
+        container.querySelectorAll('.tag-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var tagId = this.getAttribute('data-tag-id');
+                var user = getSavedUser();
+                if (!user) return;
+                var tags = getTagsFromUser(user);
+                var idx = tags.indexOf(tagId);
+                if (idx === -1) {
+                    tags.push(tagId);
+                } else {
+                    tags.splice(idx, 1);
+                }
+                // 更新本地
+                user.preferences = user.preferences || {};
+                user.preferences.personal_tags = tags;
+                localStorage.setItem("smartexit_user", JSON.stringify(user));
+                // 更新UI
+                renderPreferenceTags(user);
+                // 保存到服务器
+                saveUserTags(user.user_id, tags);
+                // 刷新建议和巴士
+                refreshBusAndMap();
+            });
+        });
+    }
+
+    async function saveUserTags(userId, tags) {
+        try {
+            var token = getSavedToken();
+            var resp = await fetch(API_BASE + "/auth/preferences?user_id=" + encodeURIComponent(userId), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    personal_tags: tags
+                })
+            });
+            await resp.json();
+        } catch(e) {
+            console.log("保存偏好失败:", e);
+        }
+    }
+
+    async function refreshSuggestions() {
+        // 偏好标签变化时刷新整个bus+map+建议（不触碰天气和空气）
+        await refreshBusAndMap();
+    }
+
+    // ========== 登录/注册 ==========
+    async function handleLogin() {
+        var username = document.getElementById("loginUsername").value.trim();
+        var password = document.getElementById("loginPassword").value;
+        var msgEl = document.getElementById("loginMsg");
+        if (!username || !password) {
+            msgEl.className = "auth-msg error";
+            msgEl.textContent = "请填写用户名和密码";
+            return;
+        }
+        msgEl.textContent = "⏳ 登录中...";
+        msgEl.className = "auth-msg";
+        try {
+            var resp = await fetch(API_BASE + "/auth/login?username=" + encodeURIComponent(username) + "&password=" + encodeURIComponent(password), {
+                method: 'POST'
+            });
+            var data = await resp.json();
+            if (data.success) {
+                localStorage.setItem("smartexit_user", JSON.stringify(data.user));
+                localStorage.setItem("smartexit_token", data.token);
+                setLoggedIn(data.user);
+                msgEl.className = "auth-msg success";
+                msgEl.textContent = "✅ " + data.message;
+                setTimeout(closeAllModals, 800);
+            } else {
+                msgEl.className = "auth-msg error";
+                msgEl.textContent = "❌ " + data.message;
+            }
+        } catch(e) {
+            msgEl.className = "auth-msg error";
+            msgEl.textContent = "❌ 连接失败: " + e.message;
+        }
+    }
+
+    async function handleRegister() {
+        var username = document.getElementById("regUsername").value.trim();
+        var email = document.getElementById("regEmail").value.trim();
+        var password = document.getElementById("regPassword").value;
+        var msgEl = document.getElementById("registerMsg");
+        if (!username || !email || !password) {
+            msgEl.className = "auth-msg error";
+            msgEl.textContent = "请填写所有字段";
+            return;
+        }
+        if (username.length < 3) {
+            msgEl.className = "auth-msg error";
+            msgEl.textContent = "用户名至少3个字符";
+            return;
+        }
+        if (password.length < 6) {
+            msgEl.className = "auth-msg error";
+            msgEl.textContent = "密码至少6位";
+            return;
+        }
+        msgEl.textContent = "⏳ 注册中...";
+        msgEl.className = "auth-msg";
+        try {
+            var resp = await fetch(
+                API_BASE + "/auth/register?username=" + encodeURIComponent(username) + "&email=" + encodeURIComponent(email) + "&password=" + encodeURIComponent(password),
+                { method: 'POST' }
+            );
+            var data = await resp.json();
+            if (data.success) {
+                localStorage.setItem("smartexit_user", JSON.stringify(data.user));
+                localStorage.setItem("smartexit_token", data.token);
+                setLoggedIn(data.user);
+                renderPreferenceTags(data.user);
+                msgEl.className = "auth-msg success";
+                msgEl.textContent = "✅ " + data.message;
+                setTimeout(closeAllModals, 800);
+            } else {
+                msgEl.className = "auth-msg error";
+                msgEl.textContent = "❌ " + data.message;
+            }
+        } catch(e) {
+            msgEl.className = "auth-msg error";
+            msgEl.textContent = "❌ 连接失败: " + e.message;
+        }
+    }
+</script>
+</body>
+</html>
