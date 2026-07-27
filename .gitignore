@@ -22,3 +22,4 @@ Thumbs.db
 # Project specific
 *.xlsx
 *.xls
+!bus_data.xlsx
