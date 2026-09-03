@@ -41,8 +41,10 @@ load_dotenv(dotenv_path=env_path)
 
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+import json
+from opencc import OpenCC
 import requests
 
 # ========== 导入微服务模块 ==========
@@ -104,7 +106,50 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# ========== 启动事件：初始化 MongoDB ==========
+# ========== 繁體轉換中間件（2026-09-03）：所有 JSON 響應的「值」轉繁體，鍵名保留 ==========
+# 說明：後端各微服務內部仍用簡體字段名（前端 JS 以 data.天气 方式訪問，屬契約，不可動）；
+#      只把返回給用戶看的字符串值統一轉成繁體（zh-HK 習慣），澳門居民閱讀無障礙。
+_trad_cc = OpenCC("s2hk")
+
+
+def _to_trad(obj):
+    """遞歸轉換：dict/list/tuple 的值轉繁體，鍵名不動；非字符串原樣返回"""
+    if isinstance(obj, dict):
+        return {k: _to_trad(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_trad(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_to_trad(v) for v in obj)
+    if isinstance(obj, str):
+        t = _trad_cc.convert(obj)
+        # OpenCC 字級轉換不處理的港澳慣用詞，手工修正
+        return t.replace("信息", "資訊")
+    return obj
+
+
+@app.middleware("http")
+async def traditional_chinese_response(request, call_next):
+    """攔截 JSON 響應，值轉繁體後重新編碼返回"""
+    response = await call_next(request)
+    ctype = response.headers.get("content-type", "")
+    if "application/json" not in ctype:
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+    try:
+        data = json.loads(body)
+        new_body = json.dumps(_to_trad(data), ensure_ascii=False).encode("utf-8")
+        headers["content-length"] = str(len(new_body))
+        return Response(content=new_body, status_code=response.status_code,
+                        headers=headers, media_type="application/json")
+    except Exception:
+        # 非 JSON 內容或解析失敗：原樣返回
+        headers["content-length"] = str(len(body))
+        return Response(content=body, status_code=response.status_code,
+                        headers=headers, media_type="application/json")
+
+
+# ========== 啟動事件：初始化 MongoDB ==========
 @app.on_event("startup")
 def startup_event():
     """应用启动时初始化公交数据到 MongoDB"""

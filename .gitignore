@@ -8,6 +8,11 @@ build/
 # Environment
 .env
 .env.local
+.env.bak
+
+# Local backups
+*.bak_*
+*.bak
 
 # IDE
 .idea/
