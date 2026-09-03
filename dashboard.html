@@ -11,6 +11,8 @@
     <!-- Leaflet.js (地圖) -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- OpenCC 簡繁轉換核心 (本地 static 目錄, 不依賴外網 CDN) -->
+    <script src="static/js/opencc.full.js"></script>
 
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -292,6 +294,7 @@
             <!-- 標題欄 -->
             <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
                 <h1 class="mb-0" style="flex:1;">🏠 Smart Exit Station</h1>
+                <button class="user-btn" id="langBtn" title="切換簡體 / 繁體">簡體</button>
                 <button class="user-btn" id="userBtn">👤 登入</button>
             </div>
             <div class="subtitle" style="color:#666;font-size:14px;padding-bottom:15px;border-bottom:2px solid #eee;">
@@ -802,8 +805,104 @@
         }
     }
 
+    // ========== 簡繁切換 (zh-Hant 繁體 / zh-Hans 簡體) ==========
+    // 默認繁體(面向澳門居民)；右上角按鈕一鍵切換，選擇記入 localStorage。
+    // 原理：頁面源碼與後端數據均為繁體，切到簡體時用 OpenCC(hk->cn) 整體轉換；
+    //       動態渲染的內容由 MutationObserver 自動跟隨當前語言。
+    let currentLang = 'zh-Hant';
+    try { currentLang = localStorage.getItem('smartexit_lang') || 'zh-Hant'; } catch (e) {}
+    let langConverting = false;
+    let _conv = null;
+    let _convLang = '';
+    const LANG_SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, INPUT: 1, TEXTAREA: 1, SELECT: 1, OPTION: 1 };
+
+    function getLangConverter() {
+        if (typeof OpenCC === 'undefined') return null;
+        if (_conv && _convLang === currentLang) return _conv;
+        _convLang = currentLang;
+        _conv = OpenCC.Converter({
+            from: currentLang === 'zh-Hans' ? 'hk' : 'cn',
+            to:   currentLang === 'zh-Hans' ? 'cn' : 'hk'
+        });
+        return _conv;
+    }
+
+    function translateStr(s) {
+        if (!s || typeof s !== 'string') return s;
+        const c = getLangConverter();
+        if (!c) return s;
+        let r = c(s);
+        if (currentLang === 'zh-Hans') {
+            // 詞級修正: 港澳「資訊」在簡體語境應爲「信息」(opencc 只做到字級 讯->讯)
+            r = r.split('资讯').join('信息');
+        }
+        return r;
+    }
+
+    function translateNode(node) {
+        if (!node) return;
+        if (node.nodeType === 3) {  // 文本節點
+            const v = translateStr(node.nodeValue);
+            if (v !== node.nodeValue) node.nodeValue = v;
+            return;
+        }
+        if (node.nodeType !== 1) return;
+        if (LANG_SKIP_TAGS[node.tagName]) return;  // 跳過 script/style/表單控件
+        ['title', 'placeholder', 'aria-label'].forEach(function(attr) {
+            if (node.hasAttribute(attr)) {
+                const v = node.getAttribute(attr);
+                const nv = translateStr(v);
+                if (nv !== v) node.setAttribute(attr, nv);
+            }
+        });
+        let child = node.firstChild;
+        while (child) {
+            const next = child.nextSibling;
+            translateNode(child);
+            child = next;
+        }
+    }
+
+    function syncLangBtn() {
+        const btn = document.getElementById('langBtn');
+        if (btn) btn.textContent = (currentLang === 'zh-Hant') ? '簡體' : '繁體';
+    }
+
+    function applyLang(toLang) {
+        if (toLang === currentLang) return;
+        currentLang = toLang;
+        try { localStorage.setItem('smartexit_lang', toLang); } catch (e) {}
+        syncLangBtn();
+        langConverting = true;
+        translateNode(document.body);
+        langConverting = false;
+    }
+
     // ========== 初始化 ==========
     window.onload = function() {
+        // ---- 簡繁切換初始化 ----
+        if (currentLang !== 'zh-Hant' && currentLang !== 'zh-Hans') currentLang = 'zh-Hant';
+        syncLangBtn();
+        var langBtn = document.getElementById('langBtn');
+        if (langBtn) {
+            langBtn.addEventListener('click', function() {
+                applyLang(currentLang === 'zh-Hant' ? 'zh-Hans' : 'zh-Hant');
+            });
+        }
+        if (currentLang === 'zh-Hans') {
+            // 頁面源碼為繁體：首次進入簡體模式時整體轉簡
+            langConverting = true;
+            translateNode(document.body);
+            langConverting = false;
+        }
+        // 簡體模式下，動態渲染的新內容(後端/JS 均為繁體)自動轉簡
+        new MutationObserver(function() {
+            if (langConverting || currentLang !== 'zh-Hans') return;
+            langConverting = true;
+            translateNode(document.body);  // 繁->簡 近似冪等，重複執行安全
+            langConverting = false;
+        }).observe(document.body, { childList: true, subtree: true, characterData: true });
+
         // 站点按钮
         var buttons = document.querySelectorAll('.stop-btn');
         for (var i = 0; i < buttons.length; i++) {
@@ -844,7 +943,7 @@
         document.getElementById("userBtn").addEventListener("click", function() {
             var user = getSavedUser();
             if (user) {
-                alert("👋 當前用戶: " + user.username + "\n郵箱: " + user.email);
+                alert(translateStr("👋 當前用戶: " + user.username + "\n郵箱: " + user.email));
             } else {
                 openModal("loginModal");
             }
