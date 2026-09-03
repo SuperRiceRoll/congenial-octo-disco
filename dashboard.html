@@ -140,14 +140,14 @@
         .stop-btn.active { background: #2a5298; color: white; }
         .stop-btn:hover { background: #2a5298; color: white; }
 
-        /* 用戶按鈕 */
+        /* 用戶按鈕 (位於白色卡片上：深色文字+淺藍底，確保可視；登入後綠色底白字) */
         .user-btn {
-            background: rgba(255,255,255,0.15); color: white; border: none;
+            background: #eef2f9; color: #1e3c72; border: 1px solid #cfd9ea;
             padding: 6px 16px; border-radius: 20px; cursor: pointer; font-size: 13px;
             margin-left: auto; transition: all 0.2s;
         }
-        .user-btn:hover { background: rgba(255,255,255,0.3); }
-        .user-btn.logged-in { background: #27ae60; }
+        .user-btn:hover { background: #dde6f3; border-color: #2a5298; }
+        .user-btn.logged-in { background: #27ae60; color: white; border-color: #27ae60; }
 
         /* 彈窗遮罩 */
         .modal-overlay {
