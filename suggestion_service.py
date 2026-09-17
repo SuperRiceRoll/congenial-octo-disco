@@ -1,10 +1,10 @@
 """
 微服务4：建议引擎 (Suggestion Engine)
 根据天气、空气质量、公交数据，动态生成个性化出行建议
-支持 Redis 缓存
+（规则引擎降级方案；结果写入本地预载快照，不直接外呼上游）
 """
 from datetime import datetime
-from redis_cache import get_cache, CacheTTL
+from data_store import get_store
 
 # 建议的严重等级
 LEVEL_WARNING = "warning"
@@ -191,10 +191,10 @@ def evaluate_combined(weather_data: dict, air_data: dict, bus_data: dict,
 def fetch_suggestions(weather_data: dict, air_data: dict, bus_data: dict,
                       preferences: dict = None) -> dict:
     """外部接口：获取所有建议"""
-    cache = get_cache()
+    store = get_store()
     cache_key = "suggestions:all"
 
-    cached = cache.get(cache_key)
+    cached = store.get(cache_key)
     if cached:
         return cached
 
@@ -206,5 +206,5 @@ def fetch_suggestions(weather_data: dict, air_data: dict, bus_data: dict,
         "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    cache.set(cache_key, result, ttl=CacheTTL.AIR_QUALITY)  # 30分钟缓存
+    store.set(cache_key, result)  # 写入本地预载快照
     return result

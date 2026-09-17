@@ -28,3 +28,6 @@ Thumbs.db
 *.xlsx
 *.xls
 !bus_data.xlsx
+
+# 本地预载快照（运行时生成，不入库）
+data/

@@ -15,3 +15,16 @@ services:
         value: deepseek
       - key: AI_API_KEY
         sync: false  # 在 Render Dashboard 里手动填入
+      # ===== 本地预载服务器（本地缓存层）=====
+      - key: PRELOAD_WEATHER_SEC
+        value: "900"
+      - key: PRELOAD_AIR_SEC
+        value: "1800"
+      - key: PRELOAD_BUS_SEC
+        value: "30"
+      - key: PRELOAD_SUGGEST_SEC
+        value: "1800"
+      - key: PRELOAD_SUGGESTIONS
+        value: "1"
+      - key: PRELOAD_REF_STOP
+        value: M02

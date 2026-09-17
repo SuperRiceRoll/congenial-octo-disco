@@ -14,7 +14,7 @@ import json
 from datetime import datetime
 import requests
 
-from redis_cache import get_cache, CacheTTL
+from data_store import get_store
 
 # ========== 配置 ==========
 # 从环境变量读取 AI 配置
@@ -211,11 +211,11 @@ def fetch_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, use
     if user_tags is None:
         user_tags = []
 
-    # 检查缓存（带标签的缓存Key不同）
-    cache = get_cache()
+    # 检查本地预载快照（带标签的缓存Key不同）
+    store = get_store()
     tag_suffix = ",".join(sorted(user_tags)) if user_tags else ""
     cache_key = f"ai_suggestions:{tag_suffix}" if tag_suffix else "ai_suggestions:all"
-    cached = cache.get(cache_key)
+    cached = store.get(cache_key)
     if cached:
         return cached
 
@@ -233,7 +233,7 @@ def fetch_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, use
                 "来源": "AI 智能引擎 🤖",
                 "provider": AI_PROVIDER
             }
-            cache.set(cache_key, result, ttl=CacheTTL.AIR_QUALITY)
+            store.set(cache_key, result)
             return result
 
     # 降级：规则引擎
@@ -245,5 +245,5 @@ def fetch_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, use
         "来源": "规则引擎（AI 暂不可用）",
         "provider": "rule_engine"
     }
-    cache.set(cache_key, result, ttl=CacheTTL.AIR_QUALITY)
+    store.set(cache_key, result)
     return result

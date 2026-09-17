@@ -30,6 +30,28 @@
     └──────────┘
 
 各服务独立模块，用户只能通过 Gateway 访问，不能直接碰数据库
+
+────────────────────────────────────────────────────────────
+🏠 本地预载服务器 (Local Preload Server) —— 2026-09-17 架构升级
+────────────────────────────────────────────────────────────
+问题：早期版本每次用户请求都可能触发对上游（Open-Meteo / WAQI / MongoDB）
+      的直接外呼，等同于「直接拿 API 去访问别人的数据库」，存在侵权与安全风险。
+
+方案：新增 preload_service 后台预载线程，**提前**按周期（天气15分/空气30分/
+      公交30秒）把上游数据拉回来，写入本地快照仓库 (data_store) 并做磁盘持久化。
+
+      ┌─────────────┐  ①主动预载(定时)   ┌──────────────┐
+      │ 上游数据源   │ ◀──────────────── │ 本地预载服务器 │
+      │ Open-Meteo  │                   │ preload_svc  │
+      │ WAQI / Mongo│ ────────────────▶ └──────┬───────┘
+      └─────────────┘  ②写入本地快照           │
+                              (data_store)     ▼
+      ┌─────────────┐  ③只读快照  ┌─────────────┐  ┌───────────┐
+      │ 用户 / 网页  │ ─────────▶ │ API Gateway │─▶│ 本地快照   │
+      └─────────────┘            │  main.py    │  │data_store │
+                                 └─────────────┘  └───────────┘
+
+用户访问网页时只连我们自己的服务器 → 不直接访问第三方网站/数据库。
 """
 import os
 from pathlib import Path
@@ -54,6 +76,8 @@ from bus_service import fetch_bus_data, init_bus_data_from_excel
 from suggestion_service import fetch_suggestions
 from user_service import register_user, login_user, get_user_preferences, update_user_preferences
 from ai_suggestion_service import fetch_ai_suggestions
+from preload_service import get_preloader
+from data_store import get_store
 
 # ========== API Key 认证配置 ==========
 # API Key 从环境变量读取，如果有多个用逗号分隔
@@ -152,16 +176,29 @@ async def traditional_chinese_response(request, call_next):
 # ========== 啟動事件：初始化 MongoDB ==========
 @app.on_event("startup")
 def startup_event():
-    """应用启动时初始化公交数据到 MongoDB"""
+    """应用启动：初始化公交数据 → 启动本地预载服务器（预热一轮后再对外服务）"""
     print("=" * 50)
     print("* Smart Exit Station Dashboard 启动中...")
     print("=" * 50)
     init_bus_data_from_excel()
-    print("=" * 50)
+    print("-" * 50)
+    # 启动本地预载服务器：立即预热一轮，再由后台线程按周期刷新
+    get_preloader().start(warm=True)
+    print("-" * 50)
     api_key_count = len(VALID_API_KEYS)
     print(f"[OK] API Gateway 已启用，共 {api_key_count} 个有效 Key")
+    print("[OK] 用户请求链路仅读取本地预载快照，不直接外呼上游")
     print("[OK] 所有服务就绪，监听 http://localhost:8000")
     print("=" * 50)
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """应用关闭：停止后台预载线程"""
+    try:
+        get_preloader().stop()
+    except Exception:
+        pass
 
 
 # ========== 前端页面托管（无需认证） ==========
@@ -327,19 +364,45 @@ def update_preferences(user_id: str, preferences: dict):
 # ========== 系统健康检查（无需认证） ==========
 @app.get("/health")
 def health_check():
-    """系统健康检查：验证各微服务状态"""
+    """系统健康检查：验证各微服务状态 + 本地预载快照新鲜度"""
     weather_ok = "错误" not in str(fetch_weather())
     air_ok = "错误" not in str(fetch_air_quality())
     bus_ok = "错误信息" not in str(fetch_bus_data("M02"))
 
+    snapshots = get_store().status()
     return {
         "status": "ok" if (weather_ok and air_ok and bus_ok) else "degraded",
         "services": {
             "weather": "[OK]" if weather_ok else "[X]",
             "air_quality": "[OK]" if air_ok else "[X]",
             "bus": "[OK]" if bus_ok else "[X]"
+        },
+        "本地预载": {
+            "快照数量": len(snapshots),
+            "快照": snapshots
         }
     }
+
+
+# ========== 本地预载服务器：状态查看 & 手动刷新 ==========
+@app.get("/data-status")
+def data_status():
+    """
+    查看本地预载服务器状态：各数据源预载周期、最近一次预载结果，
+    以及本地快照的新鲜度（无需认证，供运维 / 答辩展示）。
+    """
+    return get_preloader().status()
+
+
+@app.post("/admin/refresh")
+def admin_refresh(source: str = "", api_key: str = Depends(verify_api_key)):
+    """
+    手动触发一次预载（需 API Key）。
+    source 留空表示全部；也可指定 weather / air_quality / bus / suggestions。
+    """
+    names = [s.strip() for s in source.split(",") if s.strip()] or None
+    get_preloader().preload_once(names)
+    return {"成功": True, "已刷新": names or "全部", "状态": get_preloader().status()["数据源"]}
 
 
 # ========== 启动说明 ==========
