@@ -69,6 +69,7 @@ class Preloader:
         self._status = {}
         self._next_due = {}
         self._breakers = {}
+        self._warm_mode = False
 
         self.ref_stop = os.getenv("PRELOAD_REF_STOP", "M02")
         self.tick = int(os.getenv("PRELOAD_TICK_SEC", "15"))
@@ -130,9 +131,10 @@ class Preloader:
         return policy_for(name)
 
     def _retry(self, fn, *args, policy=None, **kwargs):
-        """带指数退避 + 抖动的重试；仅重试 UpstreamError"""
+        """带指数退避 + 抖动的重试；仅重试 UpstreamError。
+        启动预热（warm）时只尝试一次，避免阻塞启动 / 拖死健康检查。"""
         policy = policy or {}
-        attempts = int(policy.get("retry", 2)) + 1
+        attempts = 1 if self._warm_mode else int(policy.get("retry", 2)) + 1
         backoff = float(policy.get("backoff", 1.0))
         last = None
         for i in range(attempts):
@@ -295,13 +297,18 @@ class Preloader:
         print(f"[预载服务器] {src['label']} 预载 [{flag}] {count} 项 ({dur}ms)"
               + (f" 错误: {err}" if err else "") + extra)
 
-    def preload_once(self, names=None):
-        """立即预载（阻塞）。names=None 表示全部；可指定部分源"""
-        for src in self.sources:
-            if names and src["name"] not in names:
-                continue
-            self._run_one(src)
-            self._next_due[src["name"]] = time.time() + src["interval"]
+    def preload_once(self, names=None, warm=False):
+        """立即预载（阻塞）。names=None 表示全部；可指定部分源。
+        warm=True 表示启动预热：只尝试一次、不重试，尽快返回。"""
+        self._warm_mode = warm
+        try:
+            for src in self.sources:
+                if names and src["name"] not in names:
+                    continue
+                self._run_one(src)
+                self._next_due[src["name"]] = time.time() + src["interval"]
+        finally:
+            self._warm_mode = False
 
     def _loop(self):
         while not self._stop_evt.is_set():
@@ -319,7 +326,7 @@ class Preloader:
             # 只预热核心数据源（快），保证首个用户请求即有数据；
             # AI 建议等慢源交给后台线程，不阻塞启动（避免 Render 健康检查超时）
             print("[预载服务器] 启动预热：立即预载核心数据源（天气/空氣/公交）…")
-            self.preload_once(names=["weather", "air_quality", "bus"])
+            self.preload_once(names=["weather", "air_quality", "bus"], warm=True)
         self._stop_evt.clear()
         self._thread = threading.Thread(target=self._loop, name="preloader", daemon=True)
         self._thread.start()
