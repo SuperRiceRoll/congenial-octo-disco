@@ -62,7 +62,7 @@
 | --- | --- | --- |
 | `GET /data-status` | 无 | 查看预载周期、最近一次预载结果、本地快照新鲜度 |
 | `POST /admin/refresh?source=` | API Key | 手动触发预载；`source` 可空(全部)或 `weather/air_quality/bus/suggestions` |
-| `GET /health` | 无 | 原有健康检查，额外返回本地快照数量与时间 |
+| `GET /health` | 无 | 基于**本地快照新鲜度**判断各源可用性（不主动外呼），并返回熔断器状态 |
 
 > 原有的 `/dashboard`、`/macau-weather`、`/air-quality`、`/bus`、`/suggestions`
 > 接口**契约不变**，前端无需改动，但数据全部改由本地快照提供。
@@ -73,3 +73,50 @@
 2. **高性能**：用户请求命中本地内存快照，毫秒级返回，不再等待上游网络；
 3. **高可用**：上游故障时继续用上一次快照兜底；进程重启也能用磁盘快照立刻服务；
 4. **可控**：预载频率统一配置，便于限流、审计与答辩演示。
+
+---
+
+# 7. 抗崩溃升级（2026-09-22）
+
+老师指出本质需求：**第三方（上游）维护 / 故障时，我们的产品不能全线崩溃**。
+因此在原有「预载缓存」之上，补了一层 **新鲜度分级 + 失败不覆盖 + 熔断** 的韧性设计。
+
+## 7.1 修复的关键缺陷
+
+| 缺陷 | 后果 | 修复 |
+| --- | --- | --- |
+| 上游失败返回占位数据，预载**无条件覆盖**快照 | 第三方一挂，好数据被 `--` 覆盖，前端全线无数据 | `fetch_*` 失败改为抛 `UpstreamError`；预载**只在成功时写快照**，失败只 `mark_failure`，保留旧数据 |
+| AI 建议在**用户请求链路**里同步外呼大模型 | 慢 / 易挂；违反「用户不直连第三方」原则 | `fetch_ai_suggestions` 改为**只读快照**；AI 只在后台预载线程生成；miss 时用本地规则引擎降级 |
+| `/bus-route-soap` 外呼无超时 | 可能卡死 worker | 加 5s 硬超时 |
+
+## 7.2 新鲜度分级（`cache_policy.py`）
+
+每个快照按 `ttl`（刷新周期）+ `grace`（陈旧容忍窗口）分为三级：
+
+- `fresh`（age ≤ ttl）：正常；
+- `stale`（ttl < age ≤ ttl+grace）：**仍照常返回**，前端横幅提示「数据可能延迟」；
+- `unavailable`（age > ttl+grace）：返回旧值兜底，前端提示「实时数据暂不可用」。
+
+默认容忍窗口：天气 / 空气 / AI 建议 6 小时，公交 5 分钟（再久无意义）。
+
+## 7.3 熔断 + 重试（`preload_service.py`）
+
+- 单次上游调用：硬超时 5s + 最多 2 次重试（指数退避 + 抖动）；
+- 每个数据源独立**熔断器**：连续失败 5 次后打开，暂停 300s 不再打上游（避免雪崩），冷却后试探恢复。
+
+## 7.4 降级 / 可观测
+
+- `/dashboard` 新增 `数据新鲜度` 字段；前端在数据陈旧 / 不可用时显示横幅 + 各卡片「更新于 xx:xx」；
+- `/health` 改为基于**快照新鲜度**判断（不再主动外呼），并返回熔断器状态；
+- `/data-status` 返回各源预载结果 + 熔断状态 + 快照新鲜度。
+
+## 7.5 可用环境变量
+
+`UPSTREAM_TIMEOUT_SEC`（默认 5）、`UPSTREAM_RETRY`（2）、`UPSTREAM_BACKOFF`（1.0）、
+`BREAKER_THRESHOLD`（5）、`BREAKER_COOLDOWN`（300）、
+`CACHE_WEATHER_GRACE` / `CACHE_AIR_GRACE` / `CACHE_BUS_GRACE` / `CACHE_SUGGEST_GRACE`。
+
+## 7.6 自测
+
+- `python _test_resilience.py`：缓存 / 失败不覆盖 / 分级 / 熔断 / AI 不越权（20 项断言）；
+- `python _test_api.py`：`/dashboard` `/health` `/data-status` 集成验证。

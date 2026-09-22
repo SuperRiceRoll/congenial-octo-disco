@@ -26,6 +26,20 @@ except ImportError:
 
 import pandas as pd
 
+
+class UpstreamError(Exception):
+    """
+    上游（第三方）数据获取失败。
+    预载线程会捕获它并**保留上一次的好快照**，绝不覆盖；
+    用户请求链路的冷启动兜底也会捕获它、返回友好占位而不写坏数据。
+    """
+    pass
+
+
+# 上游调用硬超时（秒）：避免第三方慢请求拖死预载线程 / 用户请求
+UPSTREAM_TIMEOUT = int(os.getenv("UPSTREAM_TIMEOUT_SEC", "5"))
+
+
 # Windows DNS 解析修复（dnspython 1.16 兼容）
 try:
     import dns.resolver
@@ -66,7 +80,8 @@ WAQI_URL = f"https://api.waqi.info/feed/@{WAQI_STATION_ID}/?token={WAQI_TOKEN}"
 def fetch_weather_upstream() -> dict:
     """[上游] 调用 Open-Meteo 获取澳门实时天气"""
     try:
-        response = requests.get(WEATHER_URL, timeout=10)
+        response = requests.get(WEATHER_URL, timeout=UPSTREAM_TIMEOUT)
+        response.raise_for_status()
         data = response.json()
         cw = data["current_weather"]
         wmo_code = cw.get("weathercode", 0)
@@ -83,52 +98,32 @@ def fetch_weather_upstream() -> dict:
             "数据来源": "Open-Meteo API",
         }
     except Exception as e:
-        return {
-            "城市": "澳门",
-            "当前温度": "--",
-            "温度单位": "°C",
-            "风速": "--",
-            "风速单位": "km/h",
-            "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "数据来源": "Open-Meteo API",
-            "错误": str(e),
-        }
+        # 失败即抛出：让预载线程保留上一次的好快照，而不是用占位数据覆盖
+        raise UpstreamError(f"Open-Meteo 天气获取失败: {e}") from e
 
 
 def fetch_air_quality_upstream() -> dict:
     """[上游] 调用 WAQI 获取澳门空气质量"""
     try:
-        response = requests.get(WAQI_URL, timeout=10)
+        response = requests.get(WAQI_URL, timeout=UPSTREAM_TIMEOUT)
+        response.raise_for_status()
         data = response.json()
-        if data.get("status") == "ok":
-            d = data["data"]
-            return {
-                "城市": d["city"]["name"],
-                "空气质量指数": d["aqi"],
-                "PM2.5浓度": d["iaqi"].get("pm25", {}).get("v", "暂无"),
-                "PM10浓度": d["iaqi"].get("pm10", {}).get("v", "暂无"),
-                "数据更新时间": d["time"]["s"],
-                "数据来源": "WAQI API",
-            }
+        if data.get("status") != "ok":
+            raise UpstreamError(f"WAQI 返回状态异常: {data.get('status')}")
+        d = data["data"]
         return {
-            "城市": "澳门",
-            "空气质量指数": "暂无",
-            "PM2.5浓度": "暂无",
-            "PM10浓度": "暂无",
-            "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "城市": d["city"]["name"],
+            "空气质量指数": d["aqi"],
+            "PM2.5浓度": d["iaqi"].get("pm25", {}).get("v", "暂无"),
+            "PM10浓度": d["iaqi"].get("pm10", {}).get("v", "暂无"),
+            "数据更新时间": d["time"]["s"],
             "数据来源": "WAQI API",
-            "提示": "API返回状态异常",
         }
+    except UpstreamError:
+        raise
     except Exception as e:
-        return {
-            "城市": "澳门",
-            "空气质量指数": "暂无",
-            "PM2.5浓度": "暂无",
-            "PM10浓度": "暂无",
-            "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "数据来源": "WAQI API",
-            "错误": str(e),
-        }
+        # 失败即抛出：让预载线程保留上一次的好快照
+        raise UpstreamError(f"WAQI 空气质量获取失败: {e}") from e
 
 
 # ---------- MongoDB ----------
@@ -238,17 +233,8 @@ def fetch_bus_upstream(stop_id: str = "M02") -> dict:
 def _fetch_bus_from_excel(stop_id: str):
     """[上游] Excel 本地降级"""
     if not os.path.exists(EXCEL_FILE):
-        return {
-            "站点编号": stop_id,
-            "站点名称": "示例站点",
-            "巴士信息": [
-                {"线路": "3", "预计到站(分钟)": "2", "方向": "关闸"},
-                {"线路": "10", "预计到站(分钟)": "5", "方向": "妈阁"},
-            ],
-            "数据来源": "示例数据（无数据源）",
-            "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "提示": "请创建 bus_data.xlsx 或配置 MongoDB Atlas",
-        }
+        # 没有本地 Excel 且 MongoDB 不可用 —— 视为真正失败，交由上层保留旧快照
+        raise UpstreamError("无 bus_data.xlsx 且 MongoDB Atlas 不可用")
 
     try:
         df = pd.read_excel(EXCEL_FILE)
@@ -275,10 +261,4 @@ def _fetch_bus_from_excel(stop_id: str):
             "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
     except Exception as e:
-        return {
-            "站点编号": stop_id,
-            "站点名称": "读取失败",
-            "巴士信息": [],
-            "数据来源": "无",
-            "错误信息": str(e),
-        }
+        raise UpstreamError(f"Excel 本地读取失败: {e}") from e

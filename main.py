@@ -75,7 +75,7 @@ from air_quality_service import fetch_air_quality
 from bus_service import fetch_bus_data, init_bus_data_from_excel
 from suggestion_service import fetch_suggestions
 from user_service import register_user, login_user, get_user_preferences, update_user_preferences
-from ai_suggestion_service import fetch_ai_suggestions
+from ai_suggestion_service import fetch_ai_suggestions, suggestion_cache_key
 from preload_service import get_preloader
 from data_store import get_store
 
@@ -294,6 +294,13 @@ def get_dashboard(stop_id: str = "M02", user_tags: str = "", api_key: str = Depe
         },
         "公交": bus_data,
         "建议": suggestions,
+        "更新时间": weather_data.get("数据更新时间", ""),
+        "数据新鲜度": {
+            "天气": get_store().freshness("weather"),
+            "空气质量": get_store().freshness("air_quality"),
+            "公交": get_store().freshness(f"bus:{stop_id}"),
+            "建议": get_store().freshness(suggestion_cache_key(tags_list)),
+        },
         "数据来源": {
             "天气": weather_data.get("数据来源", ""),
             "空气质量": air_quality_data.get("数据来源", ""),
@@ -327,7 +334,7 @@ def get_bus_route_soap(route_number: str = "3",
         'SOAPAction': 'http://tempuri.org/SearchRouteByBusNumber'
     }
     try:
-        response = requests.post(url, data=soap_body, headers=headers)
+        response = requests.post(url, data=soap_body, headers=headers, timeout=5)
         if response.status_code == 200:
             return {"成功": True, "线路": route_number, "原始XML数据": response.text}
         else:
@@ -364,23 +371,32 @@ def update_preferences(user_id: str, preferences: dict):
 # ========== 系统健康检查（无需认证） ==========
 @app.get("/health")
 def health_check():
-    """系统健康检查：验证各微服务状态 + 本地预载快照新鲜度"""
-    weather_ok = "错误" not in str(fetch_weather())
-    air_ok = "错误" not in str(fetch_air_quality())
-    bus_ok = "错误信息" not in str(fetch_bus_data("M02"))
-
+    """系统健康检查：基于**本地快照新鲜度**判断各数据源可用性（不触发外呼）"""
     snapshots = get_store().status()
+
+    def level(key):
+        return (snapshots.get(key) or {}).get("level", "unavailable")
+
+    weather_lvl = level("weather")
+    air_lvl = level("air_quality")
+    bus_lvl = level("bus:M02")
+
+    def available(lv):
+        return lv != "unavailable"
+
+    overall = "ok" if (available(weather_lvl) and available(air_lvl) and available(bus_lvl)) else "degraded"
     return {
-        "status": "ok" if (weather_ok and air_ok and bus_ok) else "degraded",
+        "status": overall,
         "services": {
-            "weather": "[OK]" if weather_ok else "[X]",
-            "air_quality": "[OK]" if air_ok else "[X]",
-            "bus": "[OK]" if bus_ok else "[X]"
+            "weather": weather_lvl,
+            "air_quality": air_lvl,
+            "bus": bus_lvl,
         },
         "本地预载": {
             "快照数量": len(snapshots),
-            "快照": snapshots
-        }
+            "快照": snapshots,
+        },
+        "熔断器": get_preloader().breakers(),
     }
 
 

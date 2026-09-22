@@ -15,6 +15,7 @@ from datetime import datetime
 import requests
 
 from data_store import get_store
+from upstream_client import UpstreamError
 
 # ========== 配置 ==========
 # 从环境变量读取 AI 配置
@@ -202,48 +203,68 @@ def _call_ai_api(prompt: str) -> dict:
 from suggestion_service import evaluate_combined as _rule_engine
 
 
+def suggestion_cache_key(user_tags) -> str:
+    """统一的建议缓存 key（预载线程与用户请求链路必须一致）"""
+    tags = user_tags or []
+    tag_suffix = ",".join(sorted(tags)) if tags else ""
+    return f"ai_suggestions:{tag_suffix}" if tag_suffix else "ai_suggestions:all"
+
+
+def _rule_result(weather_data: dict, air_data: dict, bus_data: dict, note: str = "规则引擎") -> dict:
+    rule_suggestions = _rule_engine(weather_data, air_data, bus_data)
+    return {
+        "建议列表": rule_suggestions,
+        "建议数量": len(rule_suggestions),
+        "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "来源": note,
+        "provider": "rule_engine",
+    }
+
+
+def generate_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, user_tags: list = None) -> dict:
+    """
+    [仅由本地预载线程调用] 真正调用大模型生成建议并写入快照。
+    失败时抛 UpstreamError，交由预载线程保留上一次好快照（绝不覆盖）。
+    """
+    if user_tags is None:
+        user_tags = []
+    if not AI_API_KEY:
+        raise UpstreamError("未配置 AI API Key")
+
+    prompt = _build_prompt(weather_data, air_data, bus_data, user_tags=user_tags)
+    ai_result = _call_ai_api(prompt)
+    if "fallback" in ai_result:
+        raise UpstreamError(ai_result.get("error", "AI 调用失败"))
+
+    result = {
+        "建议列表": ai_result.get("suggestions", []),
+        "建议数量": len(ai_result.get("suggestions", [])),
+        "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "来源": "AI 智能引擎 🤖",
+        "provider": AI_PROVIDER,
+    }
+    get_store().set(suggestion_cache_key(user_tags), result)
+    return result
+
+
 def fetch_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, user_tags: list = None) -> dict:
     """
-    主接口：优先尝试 AI 建议，失败时降级到规则引擎
-    返回格式与前端的建议引擎兼容
+    [用户请求链路调用] **只读本地快照，绝不外呼第三方**。
+    命中快照 → 直接返回；未命中 → 用本地规则引擎降级并缓存；
+    AI 建议由后台预载线程定时生成（见 preload_service._run_suggestions）。
     - user_tags: 用户个性化标签列表，如 ["sun_protection", "like_walking"]
     """
     if user_tags is None:
         user_tags = []
 
-    # 检查本地预载快照（带标签的缓存Key不同）
     store = get_store()
-    tag_suffix = ",".join(sorted(user_tags)) if user_tags else ""
-    cache_key = f"ai_suggestions:{tag_suffix}" if tag_suffix else "ai_suggestions:all"
+    cache_key = suggestion_cache_key(user_tags)
     cached = store.get(cache_key)
-    if cached:
+    if cached is not None:
         return cached
 
-    # 尝试 AI
-    if AI_API_KEY:
-        prompt = _build_prompt(weather_data, air_data, bus_data, user_tags=user_tags)
-        ai_result = _call_ai_api(prompt)
-
-        if "fallback" not in ai_result:
-            # AI 成功
-            result = {
-                "建议列表": ai_result.get("suggestions", []),
-                "建议数量": len(ai_result.get("suggestions", [])),
-                "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "来源": "AI 智能引擎 🤖",
-                "provider": AI_PROVIDER
-            }
-            store.set(cache_key, result)
-            return result
-
-    # 降级：规则引擎
-    rule_suggestions = _rule_engine(weather_data, air_data, bus_data)
-    result = {
-        "建议列表": rule_suggestions,
-        "建议数量": len(rule_suggestions),
-        "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "来源": "规则引擎（AI 暂不可用）",
-        "provider": "rule_engine"
-    }
-    store.set(cache_key, result)
+    # 未命中：绝不同步调用大模型（否则又变回「用户请求直连第三方」）。
+    # 先用本地规则引擎给出可用建议，后台预载线程随后会补齐 AI 版本。
+    result = _rule_result(weather_data, air_data, bus_data, note="规则引擎（AI 建议预载中）")
+    store.set(cache_key, result, status="degraded")
     return result

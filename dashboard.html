@@ -542,6 +542,31 @@
         const air = data.空气质量 || {};
         const bus = data.公交 || {};
         const suggestions = data.建议 || {};
+        const fresh = data.数据新鲜度 || {};
+
+        // 数据新鲜度辅助：返回“更新於 xx:xx”小字
+        const freshTime = function (key) {
+            const f = fresh[key];
+            if (!f || !f.updated_at) return '';
+            return '<div style="font-size:11px;color:#aaa;margin-top:6px;">更新於 ' + f.updated_at + '</div>';
+        };
+
+        // 陈旧 / 不可用横幅（优雅降级提示）
+        let bannerHtml = '';
+        const staleKeys = [];
+        const unavailKeys = [];
+        for (const k in fresh) {
+            if (!fresh[k] || !fresh[k].level) continue;
+            if (fresh[k].level === 'unavailable') unavailKeys.push(k);
+            else if (fresh[k].level === 'stale') staleKeys.push(k);
+        }
+        if (unavailKeys.length > 0) {
+            bannerHtml = '<div style="background:#fdecea;border:1px solid #e57373;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:13px;color:#8a3b34;">' +
+                '⚠️ 部分即時數據暫不可用（' + unavailKeys.join('、') + '），以下顯示最近一次成功數據。</div>';
+        } else if (staleKeys.length > 0) {
+            bannerHtml = '<div style="background:#fff8e1;border:1px solid #ffca28;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:13px;color:#7a5c00;">' +
+                '🕓 部分數據可能延遲（' + staleKeys.join('、') + '），僅供參考。</div>';
+        }
 
         var weatherTemp = weather.温度 || '--';
         var weatherWind = weather.风速 || '--';
@@ -596,6 +621,7 @@
 
         // ===== 构建完整 HTML（使用 Bootstrap 5 网格） =====
         const html =
+            bannerHtml +
             // 第1行：天气 + 空气质量
             '<div class="row g-3 mb-3">' +
                 // 天气卡片
@@ -603,6 +629,7 @@
                     '<div class="info-card">' +
                         '<button class="hide-btn" onclick="hideCard(\'card-weather\')" title="隱藏此板塊">✕</button>' +
                         '<h3>🌤️ 天氣狀況</h3>' +
+                        freshTime('天气') +
                         '<div class="d-flex align-items-center gap-3">' +
                             '<div class="weather-big">' + weatherTemp + '<span class="weather-unit">°C</span></div>' +
                             '<div id="windDirectionDisplay" style="font-size:14px;color:#666;">' +
@@ -620,6 +647,7 @@
                     '<div class="info-card">' +
                         '<button class="hide-btn" onclick="hideCard(\'card-air\')" title="隱藏此板塊">✕</button>' +
                         '<h3>😷 空氣質量</h3>' +
+                        freshTime('空气质量') +
                         '<div class="aqi-value ' + aqiClass + '">AQI: ' + airIndex + '</div>' +
                         '<div style="margin-top: 8px;">📊 等級: ' + aqiText + '</div>' +
                         '<div style="font-size: 14px; color: #666; margin-top: 8px;">' +
