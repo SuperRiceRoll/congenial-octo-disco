@@ -77,29 +77,103 @@ WAQI_TOKEN = os.getenv("WAQI_TOKEN", "5308af67ea0b49a14c735f78401128d6e3f92a82")
 WAQI_URL = f"https://api.waqi.info/feed/@{WAQI_STATION_ID}/?token={WAQI_TOKEN}"
 
 
-def fetch_weather_upstream() -> dict:
-    """[上游] 调用 Open-Meteo 获取澳门实时天气"""
+def _fetch_weather_openmeteo() -> dict:
+    """[上游·主] 调用 Open-Meteo 获取澳门实时天气"""
     try:
         response = requests.get(WEATHER_URL, timeout=UPSTREAM_TIMEOUT)
-        response.raise_for_status()
+    except requests.RequestException as e:
+        raise UpstreamError(f"网络错误 {e}") from e
+
+    # 诊断友好：把 HTTP 状态码 + 响应体片段写进错误，便于定位第三方限流/拦截
+    if response.status_code != 200:
+        raise UpstreamError(f"HTTP {response.status_code} 响应={response.text[:200]!r}")
+
+    try:
         data = response.json()
         cw = data["current_weather"]
-        wmo_code = cw.get("weathercode", 0)
-        return {
-            "城市": "澳门",
-            "当前温度": cw["temperature"],
-            "温度单位": "°C",
-            "天气描述": WMO_DESC.get(wmo_code, "未知"),
-            "天气代码": wmo_code,
-            "风速": cw["windspeed"],
-            "风速单位": "km/h",
-            "风向": cw.get("winddirection", 0),
-            "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "数据来源": "Open-Meteo API",
-        }
     except Exception as e:
-        # 失败即抛出：让预载线程保留上一次的好快照，而不是用占位数据覆盖
-        raise UpstreamError(f"Open-Meteo 天气获取失败: {e}") from e
+        # 200 但结构异常（例如上游返回了 {"error":true,"reason":...} 的错误 JSON）
+        raise UpstreamError(f"响应异常 {e} 响应={response.text[:200]!r}") from e
+
+    wmo_code = cw.get("weathercode", 0)
+    return {
+        "城市": "澳门",
+        "当前温度": cw["temperature"],
+        "温度单位": "°C",
+        "天气描述": WMO_DESC.get(wmo_code, "未知"),
+        "天气代码": wmo_code,
+        "风速": cw["windspeed"],
+        "风速单位": "km/h",
+        "风向": cw.get("winddirection", 0),
+        "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "数据来源": "Open-Meteo API",
+    }
+
+
+def _fetch_weather_waqi() -> dict:
+    """
+    [上游·降级] 用 WAQI 站点数据里的气象字段拼一个天气快照。
+    WAQI 与空气质量共用同一站点，已被验证可从 Render 正常访问，
+    因此当 Open-Meteo 被限流/拦截时用它兑底，保证看板仍有温度。
+    """
+    try:
+        response = requests.get(WAQI_URL, timeout=UPSTREAM_TIMEOUT)
+    except requests.RequestException as e:
+        raise UpstreamError(f"网络错误 {e}") from e
+    if response.status_code != 200:
+        raise UpstreamError(f"HTTP {response.status_code} 响应={response.text[:200]!r}")
+    try:
+        payload = response.json()
+    except Exception as e:
+        raise UpstreamError(f"响应异常 {e} 响应={response.text[:200]!r}") from e
+    if payload.get("status") != "ok":
+        raise UpstreamError(f"状态异常 {payload.get('status')}")
+
+    d = payload.get("data", {}) or {}
+    iaqi = d.get("iaqi", {}) or {}
+
+    def _val(name):
+        item = iaqi.get(name)
+        return item.get("v") if isinstance(item, dict) else item
+
+    temp = _val("t")
+    if temp is None:
+        raise UpstreamError("WAQI 未返回温度字段 t")
+    wind_ms = _val("w")
+    wind = round(wind_ms * 3.6, 1) if isinstance(wind_ms, (int, float)) else "--"
+    humidity = _val("h")
+    pressure = _val("p")
+    return {
+        "城市": "澳门",
+        "当前温度": temp,
+        "温度单位": "°C",
+        "天气描述": "暫無（上游降級）",
+        "天气代码": None,
+        "风速": wind,
+        "风速单位": "km/h",
+        "风向": "--",
+        "湿度": humidity if humidity is not None else "--",
+        "气压": pressure if pressure is not None else "--",
+        "数据更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "数据来源": "WAQI API（天氣降級）",
+    }
+
+
+def fetch_weather_upstream() -> dict:
+    """
+    [上游] 天气：主用 Open-Meteo；失败时自动降级到 WAQI 气象字段。
+    两个都失败才抛 UpstreamError（此时预载线程会保留上一次好快照）。
+    """
+    errors = []
+    for label, fn in (
+        ("Open-Meteo", _fetch_weather_openmeteo),
+        ("WAQI降级", _fetch_weather_waqi),
+    ):
+        try:
+            return fn()
+        except UpstreamError as e:
+            errors.append(f"{label}: {e}")
+    raise UpstreamError("天气上游全部失败 → " + " | ".join(errors))
 
 
 def fetch_air_quality_upstream() -> dict:
