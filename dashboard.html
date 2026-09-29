@@ -397,6 +397,8 @@
     }
 
     function getWeatherTitle(wmoCode, temp, weatherDesc) {
+        // 上游降级 / 未知天气代码时不要默认成晴天
+        if (wmoCode === null || wmoCode === undefined) return "🌤️ " + temp + "°C";
         if (wmoCode === 0) return "☀️ 晴朗 · " + temp + "°C";
         if (wmoCode >= 1 && wmoCode <= 3) return "⛅ " + weatherDesc + " · " + temp + "°C";
         if (wmoCode >= 45 && wmoCode <= 48) return "🌫️ " + weatherDesc + " · " + temp + "°C";
@@ -798,9 +800,9 @@
             if (!resp.ok) throw new Error('fetch failed');
             const w = await resp.json();
 
-            var wmoCode = w.天气代码 || 0;
-            var windDir = w.风向 || 0;
-            var windSpeed = w.风速 || fallbackTemp;
+            var wmoCode = (typeof w.天气代码 === 'number') ? w.天气代码 : null;
+            var windDir = (typeof w.风向 === 'number') ? w.风向 : null;
+            var windSpeed = (w.风速 === undefined || w.风速 === null || w.风速 === '') ? '--' : w.风速;
             var weatherDesc = w.天气描述 || '未知';
             var temp = w.当前温度 || fallbackTemp;
 
@@ -809,11 +811,11 @@
             document.getElementById('weatherBanner').style.backgroundImage = "url('" + imgUrl + "')";
             document.getElementById('bannerTitle').textContent = getWeatherTitle(wmoCode, temp, weatherDesc);
             document.getElementById('bannerSub').textContent =
-                "💨 " + windDirectionText(windDir) + "風 " + windSpeed + " km/h · " + weatherDesc;
+                (windDir === null ? "" : "💨 " + windDirectionText(windDir) + "風 ") + windSpeed + " km/h · " + weatherDesc;
 
             // 更新风向罗盘
             var compass = document.getElementById('windCompass');
-            if (compass) {
+            if (compass && windDir !== null) {
                 compass.style.transform = 'rotate(' + windDir + 'deg)';
             }
             var windSpeedEl = document.getElementById('windSpeedDisplay');
