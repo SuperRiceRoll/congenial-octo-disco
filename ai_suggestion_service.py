@@ -11,6 +11,7 @@
 """
 import os
 import json
+import time
 from datetime import datetime
 import requests
 
@@ -48,6 +49,9 @@ API_ENDPOINTS = {
 # 备用模型：主模型不可用（余额不足 / 限流 / 网络故障）时自动兜底。
 # 置空即关闭：AI_FALLBACK_PROVIDER=""
 FALLBACK_PROVIDER = os.getenv("AI_FALLBACK_PROVIDER", "pollinations").strip().lower()
+# 主模型连续失败后先冷却一段时间，期间直接走备用模型，避免每轮都白撞一次 402
+PRIMARY_COOLDOWN_SEC = int(os.getenv("AI_PRIMARY_COOLDOWN_SEC", "1800"))
+_PRIMARY_DOWN_UNTIL = 0.0
 
 
 def _get_ai_config():
@@ -198,12 +202,18 @@ def _call_provider(provider: str, prompt: str, api_key: str) -> dict:
 
 def _call_ai_api(prompt: str) -> dict:
     """调用 AI API：先主模型；不可用时按 AI_FALLBACK_PROVIDER 兜底。"""
+    global _PRIMARY_DOWN_UNTIL
     primary = (AI_PROVIDER or "deepseek").lower()
+    now = time.time()
+
     attempts = []
-    if AI_API_KEY:
+    if AI_API_KEY and now >= _PRIMARY_DOWN_UNTIL:
         attempts.append((primary, AI_API_KEY))
     if FALLBACK_PROVIDER and FALLBACK_PROVIDER != primary:
         attempts.append((FALLBACK_PROVIDER, ""))
+
+    if not attempts:
+        return {"error": "未配置可用的 AI 模型", "fallback": True}
 
     last = None
     for provider, key in attempts:
@@ -211,7 +221,11 @@ def _call_ai_api(prompt: str) -> dict:
         if "fallback" not in result:
             return result
         last = result
-    return last or {"error": "未配置 AI API Key", "fallback": True}
+        if provider == primary:
+            _PRIMARY_DOWN_UNTIL = now + PRIMARY_COOLDOWN_SEC
+            print(f"[AI] 主模型 {primary} 不可用（{result.get('error')}），"
+                  f"{PRIMARY_COOLDOWN_SEC}s 内直接使用备用模型 {FALLBACK_PROVIDER}")
+    return last
 
 
 # ========== 从 suggestion_service 导入规则引擎作为降级方案 ==========

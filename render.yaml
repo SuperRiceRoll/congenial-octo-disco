@@ -15,6 +15,12 @@ services:
         value: deepseek
       - key: AI_API_KEY
         sync: false  # 在 Render Dashboard 里手动填入
+      # 主模型不可用（余额不足 / 限流 / 故障）时的免费兜底模型；留空即关闭
+      - key: AI_FALLBACK_PROVIDER
+        value: pollinations
+      # 主模型失败后冷却多少秒（期间直接走兜底，避免每轮白撞一次）
+      - key: AI_PRIMARY_COOLDOWN_SEC
+        value: "1800"
       # ===== 本地预载服务器（本地缓存层）=====
       - key: PRELOAD_WEATHER_SEC
         value: "900"
