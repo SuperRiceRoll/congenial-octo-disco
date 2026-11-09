@@ -37,8 +37,17 @@ API_ENDPOINTS = {
     "qwen": {
         "url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
         "model": "qwen-turbo"
+    },
+    # 免费开放端点（无需 key），仅在主模型不可用时兜底
+    "pollinations": {
+        "url": "https://text.pollinations.ai/openai",
+        "model": "openai"
     }
 }
+
+# 备用模型：主模型不可用（余额不足 / 限流 / 网络故障）时自动兜底。
+# 置空即关闭：AI_FALLBACK_PROVIDER=""
+FALLBACK_PROVIDER = os.getenv("AI_FALLBACK_PROVIDER", "pollinations").strip().lower()
 
 
 def _get_ai_config():
@@ -127,76 +136,82 @@ PM10：{pm10} ug/m³
     return prompt
 
 
-def _call_ai_api(prompt: str) -> dict:
-    """调用 AI API"""
-    if not AI_API_KEY:
-        return {"error": "未配置 AI API Key", "fallback": True}
+def _call_provider(provider: str, prompt: str, api_key: str) -> dict:
+    """向单个 provider 发起一次请求；失败返回 {"error": ..., "fallback": True}。"""
+    defaults = API_ENDPOINTS.get(provider)
+    if not defaults:
+        return {"error": f"未知的 AI provider: {provider}", "fallback": True}
 
-    api_url, model = _get_ai_config()
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {AI_API_KEY}"
-    }
-
-    # 通义千问的请求格式不同
-    if AI_PROVIDER.lower() == "qwen":
-        payload = {
-            "model": model,
-            "input": {
-                "messages": [{"role": "user", "content": prompt}]
-            }
-        }
+    if provider == (AI_PROVIDER or "").lower():
+        api_url, model = _get_ai_config()
     else:
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7,
-            "max_tokens": 500
-        }
+        api_url, model = defaults["url"], defaults["model"]
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    if provider == "qwen":
+        payload = {"model": model,
+                   "input": {"messages": [{"role": "user", "content": prompt}]}}
+    else:
+        payload = {"model": model,
+                   "messages": [{"role": "user", "content": prompt}],
+                   "temperature": 0.7,
+                   "max_tokens": 500}
 
     try:
-        response = requests.post(
-            api_url,
-            headers=headers,
-            json=payload,
-            timeout=15
-        )
-
-        if response.status_code != 200:
-            return {"error": f"API 返回 {response.status_code}", "fallback": True}
-
-        data = response.json()
-
-        # 解析不同平台的返回格式
-        if AI_PROVIDER.lower() == "qwen":
-            content = data.get("output", {}).get("text", "")
-        else:
-            content = data["choices"][0]["message"]["content"]
-
-        # 提取 JSON（去掉 markdown 代码块）
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[-1]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-
-        try:
-            result = json.loads(content)
-            return result
-        except json.JSONDecodeError:
-            # AI 返回的不是 JSON，直接作为文本返回
-            return {
-                "suggestions": [
-                    {"icon": "🤖", "category": "AI建议", "message": content}
-                ]
-            }
-
+        response = requests.post(api_url, headers=headers, json=payload, timeout=25)
     except requests.exceptions.Timeout:
         return {"error": "AI API 请求超时", "fallback": True}
     except Exception as e:
         return {"error": str(e), "fallback": True}
+
+    if response.status_code != 200:
+        return {"error": f"API 返回 {response.status_code}", "fallback": True}
+
+    try:
+        data = response.json()
+        if provider == "qwen":
+            content = data.get("output", {}).get("text", "")
+        else:
+            content = data["choices"][0]["message"]["content"]
+    except Exception:
+        return {"error": "AI 返回格式异常", "fallback": True}
+
+    content = (content or "").strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+    try:
+        result = json.loads(content)
+    except json.JSONDecodeError:
+        # AI 返回的不是 JSON，直接作为单条建议
+        result = {"suggestions": [{"icon": "\U0001F916", "category": "AI建議",
+                                   "message": content}]}
+    result["_provider"] = provider
+    return result
+
+
+def _call_ai_api(prompt: str) -> dict:
+    """调用 AI API：先主模型；不可用时按 AI_FALLBACK_PROVIDER 兜底。"""
+    primary = (AI_PROVIDER or "deepseek").lower()
+    attempts = []
+    if AI_API_KEY:
+        attempts.append((primary, AI_API_KEY))
+    if FALLBACK_PROVIDER and FALLBACK_PROVIDER != primary:
+        attempts.append((FALLBACK_PROVIDER, ""))
+
+    last = None
+    for provider, key in attempts:
+        result = _call_provider(provider, prompt, key)
+        if "fallback" not in result:
+            return result
+        last = result
+    return last or {"error": "未配置 AI API Key", "fallback": True}
 
 
 # ========== 从 suggestion_service 导入规则引擎作为降级方案 ==========
@@ -224,11 +239,11 @@ def _rule_result(weather_data: dict, air_data: dict, bus_data: dict, note: str =
 def generate_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, user_tags: list = None) -> dict:
     """
     [仅由本地预载线程调用] 真正调用大模型生成建议并写入快照。
-    失败时抛 UpstreamError，交由预载线程保留上一次好快照（绝不覆盖）。
+    失败时抛 UpstreamError，交由预载线程兜底成规则引擎快照（绝不覆盖已成功的旧快照）。
     """
     if user_tags is None:
         user_tags = []
-    if not AI_API_KEY:
+    if not AI_API_KEY and not FALLBACK_PROVIDER:
         raise UpstreamError("未配置 AI API Key")
 
     prompt = _build_prompt(weather_data, air_data, bus_data, user_tags=user_tags)
@@ -236,12 +251,18 @@ def generate_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, 
     if "fallback" in ai_result:
         raise UpstreamError(ai_result.get("error", "AI 调用失败"))
 
+    provider_used = ai_result.get("_provider", AI_PROVIDER)
+    if provider_used == (AI_PROVIDER or "").lower():
+        source_label = "AI 智能引擎 \U0001F916"
+    else:
+        source_label = f"AI 智能引擎 \U0001F916（備用模型 {provider_used}）"
+
     result = {
         "建议列表": ai_result.get("suggestions", []),
         "建议数量": len(ai_result.get("suggestions", [])),
         "更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "来源": "AI 智能引擎 🤖",
-        "provider": AI_PROVIDER,
+        "来源": source_label,
+        "provider": provider_used,
     }
     get_store().set(suggestion_cache_key(user_tags), result)
     return result
@@ -250,7 +271,8 @@ def generate_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, 
 def fetch_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, user_tags: list = None) -> dict:
     """
     [用户请求链路调用] **只读本地快照，绝不外呼第三方**。
-    命中快照 → 直接返回；未命中 → 用本地规则引擎降级并缓存；
+    命中快照 → 直接返回；个性化标签还没生成时 → 复用通用 AI 建议；
+    两者都没有 → 用本地规则引擎降级并缓存。
     AI 建议由后台预载线程定时生成（见 preload_service._run_suggestions）。
     - user_tags: 用户个性化标签列表，如 ["sun_protection", "like_walking"]
     """
@@ -263,8 +285,15 @@ def fetch_ai_suggestions(weather_data: dict, air_data: dict, bus_data: dict, use
     if cached is not None:
         return cached
 
+    # 个性化标签尚未生成：先用通用 AI 建议顶上，胜过规则引擎
+    general_key = suggestion_cache_key([])
+    if cache_key != general_key:
+        general = store.get(general_key)
+        if general and general.get("provider") not in (None, "rule_engine"):
+            return general
+
     # 未命中：绝不同步调用大模型（否则又变回「用户请求直连第三方」）。
-    # 先用本地规则引擎给出可用建议，后台预载线程随后会补齐 AI 版本。
-    result = _rule_result(weather_data, air_data, bus_data, note="规则引擎（AI 建议预载中）")
+    # 用本地规则引擎兜底，并如实标注 AI 当前不可用（不再显示「预载中」）。
+    result = _rule_result(weather_data, air_data, bus_data, note="規則引擎（AI 暫時不可用）")
     store.set(cache_key, result, status="degraded")
     return result

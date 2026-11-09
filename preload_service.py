@@ -209,19 +209,19 @@ class Preloader:
         from ai_suggestion_service import (
             generate_ai_suggestions,
             suggestion_cache_key,
-            fetch_ai_suggestions,
             AI_API_KEY,
+            FALLBACK_PROVIDER,
         )
 
         weather = self.store.get("weather") or {}
         air = self.store.get("air_quality") or {}
         bus = self.store.get(f"bus:{self.ref_stop}") or {}
 
-        # 未配置 AI Key：退回纯本地的规则引擎（不联网），保证建议卡有内容
-        if not AI_API_KEY:
+        # 既没有 AI Key、也没有备用模型：建议卡由请求链路用规则引擎兜底
+        if not AI_API_KEY and not FALLBACK_PROVIDER:
             for tags in _DEFAULT_TAG_SETS:
-                fetch_ai_suggestions(weather, air, bus, user_tags=list(tags))
-            return len(_DEFAULT_TAG_SETS)
+                self.store.mark_failure(suggestion_cache_key(tags), "未配置 AI API Key")
+            return 0
 
         policy = self._src_policy("suggestions")
         ok = 0
@@ -233,8 +233,11 @@ class Preloader:
                             user_tags=list(tags), policy=policy)
                 ok += 1
             except UpstreamError as e:
+                # 第一组就失败说明 AI 整体不可用（余额 / 限流 / 网络），
+                # 不再把剩下 8 组也试一遍，避免拖住调度线程。
                 last_err = e
                 self.store.mark_failure(key, str(e))
+                break
         if ok == 0 and last_err:
             raise last_err
         return ok
